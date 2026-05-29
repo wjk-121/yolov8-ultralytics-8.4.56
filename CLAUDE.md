@@ -110,6 +110,7 @@ yolo TASK MODE ARGS
 
 ```python
 from ultralytics import YOLO
+
 model = YOLO("yol26n.pt")
 model.train(data="coco8.yaml", epochs=100)
 model.predict("image.jpg")

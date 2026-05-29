@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(conda run *)",
+      "Bash(ls \"c:/Users/WJK-PC/anaconda3/envs/cnn_pruning_GPU/lib/site-packages/ultralytics/\" 2>&1 | head -25)",
+      "Read(//c/Users/WJK-PC/anaconda3/envs/cnn_pruning_GPU/lib/site-packages/**)"
+    ]
+  }
+}

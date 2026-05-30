@@ -32,16 +32,32 @@ Web app is at v5 iteration — polling-based video detection, camera session gro
 
 - **操作系统**: Windows 11 Pro (10.0.26200)
 - **Shell**: Bash (Git for Windows / MinGW) — 使用 Unix 风格路径 `/` 分隔
-- **Python**: 3.13.3 (系统级安装, `C:/Program Files/Python313/python`)
-- **包管理**: pip (系统 Python) + Conda (备用, 已安装但 web 应用使用系统 Python)
-- **Conda 环境** (如需要):
+- **Conda 虚拟环境**: **`yolov11`** (主要运行环境)
+  - 路径: `C:/Users/WJK-PC/anaconda3/envs/yolov11`
+  - Python: 3.12.12
+  - 激活: `conda activate yolov11`
+  - 所有开发和运行操作都应在此环境下进行
+- **其他 Conda 环境**:
   - `base` — `C:/Users/WJK-PC/anaconda3`
-  - `yolov11` — `C:/Users/WJK-PC/anaconda3/envs/yolov11`
   - `cnn_pruning_GPU` — `C:/Users/WJK-PC/anaconda3/envs/cnn_pruning_GPU`
-- **VS Code**: 配置了 Conda 作为默认 Python 环境管理器
-- **核心依赖**: PyTorch, OpenCV, NumPy, Matplotlib, PyYAML, Requests, SciPy, Polars
-- **Web 应用额外依赖** (不在 pyproject.toml 中): flask, flask-cors, waitress, imageio-ffmpeg
+- **VS Code**: 配置了 Conda 作为默认 Python 环境管理器 (`.vscode/settings.json`)
 - **Python 版本要求**: ≥ 3.8 (支持 3.8–3.12)
+
+### 关键依赖 (yolov11 环境)
+
+| 包名 | 版本 | 用途 |
+| --- | --- | --- |
+| `torch` | 2.7.0+cu128 | GPU 推理 (CUDA 12.8) |
+| `torchvision` | 0.22.0+cu128 | 图像处理 |
+| `ultralytics` | 8.4.56 | YOLO 核心 (可编辑安装, 指向项目根目录) |
+| `opencv-python` | 4.12.0.88 | 视频/图像 I/O |
+| `flask` | 3.1.3 | Web 框架 |
+| `flask-cors` | 6.0.2 | 跨域支持 |
+| `waitress` | 3.0.2 | WSGI 生产服务器 |
+| `imageio-ffmpeg` | 0.6.0 | H.264 视频重编码 |
+| `numpy` | 2.2.6 | 数值计算 |
+| `pillow` | 12.0.0 | 图像处理 |
+
 - **Windows 特定**: PyTorch 2.4.0 因 CPU 兼容性错误被排除
 
 ## Development Commands

@@ -2,6 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Repository
+
+- **GitHub**: https://github.com/wjk-121/yolov8-ultralytics-8.4.56
+- **Remote**: `origin` → `https://github.com/wjk-121/yolov8-ultralytics-8.4.56.git`
+- **Local path**: `d:\yolov8-ultralytics-8.4.56`
+- **GitHub user**: wjk-121
+- **Platform**: Windows 11 (conda environments)
+- **Editor**: VS Code
+
 ## Project Overview
 
 Fork of Ultralytics YOLOv8 (v8.4.56) with a custom Flask web application for inference. Chinese-language UI targeting PCB defect detection and autonomous vehicle competition use cases. License: AGPL-3.0.
@@ -125,8 +134,16 @@ YOLOv3, YOLOv5, YOLOv6, YOLOv8, YOLOv9, YOLOv10, YOLO11, YOLO12, YOLO26, RT-DETR
 
 ## Environment
 
-- Python ≥ 3.8 (supports 3.8–3.12)
-- Conda is the configured environment manager (see `.vscode/settings.json`)
-- Core deps: PyTorch, OpenCV, NumPy, Matplotlib, PyYAML, Requests, SciPy, Polars
-- Web app additionally requires: flask, flask-cors, waitress, imageio-ffmpeg (not in pyproject.toml)
-- Windows-specific: PyTorch 2.4.0 excluded due to CPU errors
+- **OS**: Windows 11 Pro (10.0.26200)
+- **Shell**: bash (Git Bash / MSYS2), not cmd or PowerShell
+- **Python**: ≥ 3.8 (supports 3.8–3.12). Primary env: system Python in `/c/Program Files/Python313/`
+- **Conda envs**: `base`, `cnn_pruning_GPU`, `yolov11` (see `.vscode/settings.json`)
+- **Package manager**: pip + conda
+- **Core deps**: PyTorch, OpenCV, NumPy, Matplotlib, PyYAML, Requests, SciPy, Polars
+- **Web app deps**: flask, flask-cors, waitress, imageio-ffmpeg (NOT in pyproject.toml — install separately)
+- **Windows-specific**: PyTorch 2.4.0 excluded due to CPU errors. File paths use forward slashes. Chinese filename encoding works with `Path` objects but avoid in shell commands.
+- **Server**: Flask + Waitress on `http://localhost:5000`. Access via browser at this URL, NOT `file:///` protocol.
+
+## Session Context (Auto-loaded)
+
+When starting a new session, Claude Code automatically loads this `CLAUDE.md` plus the memory index at `memory/MEMORY.md`. Key project facts are persisted in the memory system — no need to re-explain project basics.

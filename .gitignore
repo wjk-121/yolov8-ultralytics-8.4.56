@@ -206,3 +206,10 @@ results.csv
 
 # CI test asset cache
 .ultralytics_cache/
+
+# Custom app runtime files
+.claude/
+models/
+temp/
+uploads/
+data/samples/

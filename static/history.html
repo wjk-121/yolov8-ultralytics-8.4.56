@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>检测详情 · YOLOv8</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/style.css">
+    <style>
+        .history-page { max-width: 1200px; margin: 0 auto; padding: 80px 24px 40px; }
+        .history-back { display: inline-flex; align-items: center; gap: 6px; color: var(--primary); text-decoration: none; font-size: 14px; font-weight: 500; margin-bottom: 20px; padding: 8px 0; transition: opacity 0.15s; }
+        .history-back:hover { opacity: 0.7; }
+        .history-card { background: var(--surface); border-radius: var(--radius-lg); border: 1px solid var(--border-light); overflow: hidden; box-shadow: var(--shadow); }
+        .history-hero { position: relative; background: var(--bg); display: flex; justify-content: center; align-items: center; min-height: 300px; max-height: 65vh; overflow: auto; }
+        .history-hero img { max-width: 100%; max-height: 65vh; object-fit: contain; display: block; }
+        .history-hero video { max-width: 100%; max-height: 65vh; border-radius: 4px; }
+        .history-hero-empty { padding: 60px 20px; text-align: center; color: var(--text3); font-size: 14px; }
+        .history-header { padding: 20px 24px; border-bottom: 1px solid var(--border-light); }
+        .history-header-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+        .history-title { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
+        .history-badge { display: inline-block; padding: 4px 12px; background: var(--primary-bg); color: var(--primary); border-radius: 20px; font-size: 12px; font-weight: 500; }
+        .history-meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 16px; }
+        .history-meta-item { display: flex; flex-direction: column; gap: 2px; }
+        .history-meta-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text3); }
+        .history-meta-value { font-size: 14px; font-weight: 500; color: var(--text); }
+        .history-meta-value.highlight { color: var(--primary); font-size: 20px; font-weight: 700; }
+        .history-body { padding: 24px; }
+        .history-section { margin-bottom: 24px; }
+        .history-section:last-child { margin-bottom: 0; }
+        .history-section-title { font-size: 14px; font-weight: 600; color: var(--text2); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+        .history-section-title svg { width: 16px; height: 16px; opacity: 0.6; }
+        .snapshot-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+        .snapshot-card { border: 1px solid var(--border-light); border-radius: var(--radius); overflow: hidden; transition: transform 0.15s, box-shadow 0.15s; cursor: pointer; }
+        .snapshot-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+        .snapshot-card img { width: 100%; height: 200px; object-fit: cover; display: block; }
+        .snapshot-card-info { padding: 10px 12px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+        .snapshot-card-dets { font-weight: 600; color: var(--text); }
+        .snapshot-card-time { color: var(--text3); }
+        .history-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 24px; border-top: 1px solid var(--border-light); background: var(--bg); }
+        .btn-danger { display: inline-flex; align-items: center; gap: 6px; padding: 8px 20px; background: var(--danger-bg); color: var(--danger); border: 1px solid rgba(255,59,48,0.2); border-radius: 20px; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.15s; }
+        .btn-danger:hover { background: rgba(255,59,48,0.2); }
+        .loading-page { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 60vh; gap: 16px; }
+        .error-page { text-align: center; padding: 80px 20px; }
+        .error-page h2 { font-size: 20px; margin-bottom: 8px; color: var(--danger); }
+        .error-page p { color: var(--text3); margin-bottom: 20px; }
+        .detection-summary { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+        .detection-chip { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--bg); border-radius: 8px; font-size: 13px; }
+        .detection-chip-count { background: var(--primary-bg); color: var(--primary); padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+        .batch-result-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+        .batch-item { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--border-light); border-radius: var(--radius-sm); }
+        .batch-item-idx { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; background: var(--primary-bg); color: var(--primary); border-radius: 50%; font-size: 12px; font-weight: 600; flex-shrink: 0; }
+        .batch-item-info { flex: 1; min-width: 0; }
+        .batch-item-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .batch-item-dets { font-size: 12px; color: var(--text3); }
+        /* 媒体查看器导航 */
+        .history-hero { position: relative; display: flex; align-items: center; justify-content: center; min-height: 300px; max-height: 65vh; background: var(--bg); overflow: hidden; }
+        .media-nav-btn { position: absolute; top: 50%; transform: translateY(-50%); z-index: 10; width: 44px; height: 44px; border-radius: 50%; background: rgba(255,255,255,0.92); border: 1px solid var(--border-light); cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--text); transition: all 0.2s; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .media-nav-btn:hover { background: #fff; box-shadow: 0 4px 14px rgba(0,0,0,0.18); color: var(--primary); transform: translateY(-50%) scale(1.05); }
+        .media-prev { left: 12px; }
+        .media-next { right: 12px; }
+        .media-viewer-center { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 200px; padding: 0 56px; }
+        .media-viewer-center img, .media-viewer-center video { max-width: 100%; max-height: 58vh; }
+        .media-viewer-info { display: flex; align-items: center; gap: 12px; margin-top: 10px; padding: 6px 16px; background: rgba(0,0,0,0.04); border-radius: 20px; font-size: 13px; }
+        .media-viewer-label { font-weight: 600; color: var(--text); }
+        .media-viewer-counter { color: var(--primary); font-weight: 500; }
+        .media-viewer-dets { color: var(--text3); font-size: 12px; }
+        .snapshot-card.active, .batch-item-clickable.active { border-color: var(--primary) !important; box-shadow: 0 0 0 2px rgba(0,122,255,0.25); }
+        .batch-item-clickable { cursor: pointer; transition: all 0.15s; }
+        .batch-item-clickable:hover { background: var(--primary-bg); transform: translateY(-1px); }
+        .batch-result-row { transition: background 0.15s; }
+        .batch-result-row.selected { background: rgba(0,122,255,0.08); border-left: 3px solid var(--primary); }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-content">
+            <div class="nav-brand">
+                <div class="brand-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                        <path d="M2 17l10 5 10-5"/>
+                        <path d="M2 12l10 5 10-5"/>
+                    </svg>
+                </div>
+                <span class="brand-name">YOLOv8</span>
+            </div>
+            <div class="nav-right">
+                <a href="/" class="nav-btn" title="返回首页" style="text-decoration:none;font-size:13px;gap:4px;width:auto;padding:0 12px;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M19 12H5"/>
+                        <path d="M12 19l-7-7 7-7"/>
+                    </svg>
+                    返回
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="history-page" id="historyPage">
+        <div class="loading-page" id="loadingState">
+            <div class="loading-spinner"></div>
+            <p>加载中...</p>
+        </div>
+    </div>
+
+    <div class="toast-wrap" id="toastWrap"></div>
+
+    <script src="/common.js"></script>
+    <script>
+        const historyId = window.location.pathname.split('/').pop();
+        let mediaItems = [];
+        let currentMediaIndex = 0;
+
+        function buildMediaItems(dt) {
+            const items = [];
+            const runId = dt.id;
+            const files = dt.files || [];
+            if (dt.result_data && dt.result_data.snapshots && dt.result_data.snapshots.length > 0) {
+                dt.result_data.snapshots.forEach(function(snap) {
+                    items.push({url: snap.result_image || '', type: 'image', label: '抓拍 #' + snap.index, dets: snap.detections_count, ts: snap.timestamp});
+                });
+            } else if (dt.result_data && dt.result_data.results && dt.result_data.results.length > 0) {
+                dt.result_data.results.forEach(function(br) {
+                    let url = br.result_image || br.result_video || '';
+
+                    if (!url && br.type === 'image') {
+                        for (var fi = 0; fi < files.length; fi++) {
+                            var fname = files[fi];
+                            if (fname.endsWith('_' + br.filename) || fname === br.filename) {
+                                var ext = fname.split('.').pop().toLowerCase();
+                                if (['jpg','jpeg','png','bmp','webp'].indexOf(ext) >= 0) {
+                                    url = '/api/runs/' + runId + '/' + fname;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    items.push({url: url, type: br.type, label: br.filename, dets: br.detections_count});
+                });
+            } else if (dt.result_image) {
+                var ext = dt.result_image.split('.').pop().toLowerCase();
+                var isVideo = ['mp4','avi','mov','webm'].indexOf(ext) >= 0;
+                items.push({url: dt.result_image, type: isVideo ? 'video' : 'image', label: dt.source || '检测结果', dets: dt.detections});
+            }
+            return items;
+        }
+
+        function selectMediaItem(index) {
+            if (mediaItems.length === 0) return;
+            index = ((index % mediaItems.length) + mediaItems.length) % mediaItems.length;
+            currentMediaIndex = index;
+            var hero = document.getElementById('mediaViewerHero');
+            if (hero) hero.innerHTML = renderMediaViewerInner();
+            var cards = document.querySelectorAll('.snapshot-card, .batch-item-clickable');
+            cards.forEach(function(el, i) { el.classList.toggle('active', i === index); });
+            if (hero) hero.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+        }
+
+        function renderMediaViewerInner() {
+            if (mediaItems.length === 0) return '<div class="history-hero-empty">无结果图片</div>';
+            var item = mediaItems[currentMediaIndex];
+            if (!item || !item.url) return '<div class="history-hero-empty">此项目无可用预览</div>';
+            var total = mediaItems.length;
+            var mediaHtml = '';
+            if (item.type === 'video') {
+                mediaHtml = '<video controls autoplay loop playsinline style="max-width:100%;max-height:58vh;border-radius:4px"><source src="' + item.url + '" type="video/mp4"></video>';
+            } else {
+                mediaHtml = '<img src="' + item.url + '" alt="' + escapeHtml(item.label) + '" style="max-width:100%;max-height:58vh;object-fit:contain;border-radius:4px" onerror="this.parentElement.innerHTML=\'<div class=history-hero-empty>图片加载失败</div>\'">';
+            }
+            var h = '';
+            if (total > 1) {
+                h += '<button class="media-nav-btn media-prev" onclick="selectMediaItem(' + (currentMediaIndex - 1) + ')" title="上一个 (←)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg></button>';
+            }
+            h += '<div class="media-viewer-center">' + mediaHtml;
+            h += '<div class="media-viewer-info"><span class="media-viewer-label">' + escapeHtml(item.label) + '</span>';
+            if (total > 1) h += '<span class="media-viewer-counter">' + (currentMediaIndex + 1) + ' / ' + total + '</span>';
+            h += '<span class="media-viewer-dets">' + item.dets + ' 目标</span></div></div>';
+            if (total > 1) {
+                h += '<button class="media-nav-btn media-next" onclick="selectMediaItem(' + (currentMediaIndex + 1) + ')" title="下一个 (→)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></button>';
+            }
+            return h;
+        }
+
+        async function loadDetail() {
+            try {
+                const r = await fetch('/api/history/' + historyId);
+                const d = await r.json();
+                if (!d.success) { showError(d.error || '记录不存在'); return; }
+                renderDetail(d.data);
+            } catch (e) { showError('加载失败: ' + e.message); }
+        }
+
+        function showError(msg) {
+            document.getElementById('historyPage').innerHTML =
+                '<a href="/" class="history-back"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg> 返回首页</a>' +
+                '<div class="error-page"><h2>加载失败</h2><p>' + msg + '</p><a href="/" class="btn-primary" style="text-decoration:none">返回首页</a></div>';
+        }
+
+        function renderDetail(dt) {
+            const page = document.getElementById('historyPage');
+            let h = '<a href="/" class="history-back"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg> 返回首页</a>';
+            h += '<div class="history-card">';
+
+            // 构建媒体列表
+            mediaItems = buildMediaItems(dt);
+            currentMediaIndex = 0;
+            for (var mi = 0; mi < mediaItems.length; mi++) {
+                if (mediaItems[mi].url) { currentMediaIndex = mi; break; }
+            }
+            // 媒体查看器
+            h += '<div class="history-hero" id="mediaViewerHero">';
+            h += renderMediaViewerInner();
+            h += '</div>';
+
+            // 头部信息
+            h += '<div class="history-header">';
+            h += '<div class="history-header-top">';
+            h += '<div class="history-title">' + escapeHtml(dt.type) + '</div>';
+            h += '<span class="history-badge">' + escapeHtml(dt.timestamp) + '</span>';
+            h += '</div>';
+            h += '<div class="history-meta-grid">';
+            h += '<div class="history-meta-item"><span class="history-meta-label">检测目标</span><span class="history-meta-value highlight">' + dt.detections + '</span></div>';
+            h += '<div class="history-meta-item"><span class="history-meta-label">处理耗时</span><span class="history-meta-value">' + dt.elapsed_time + 's</span></div>';
+            if (dt.result_data && dt.result_data.fps) {
+                h += '<div class="history-meta-item"><span class="history-meta-label">FPS</span><span class="history-meta-value">' + dt.result_data.fps + '</span></div>';
+            }
+            if (dt.result_data && dt.result_data.total_frames) {
+                h += '<div class="history-meta-item"><span class="history-meta-label">总帧数</span><span class="history-meta-value">' + dt.result_data.total_frames + '</span></div>';
+            }
+            if (dt.result_data && dt.result_data.image_size) {
+                h += '<div class="history-meta-item"><span class="history-meta-label">图像尺寸</span><span class="history-meta-value">' + dt.result_data.image_size.width + ' × ' + dt.result_data.image_size.height + '</span></div>';
+            }
+            h += '<div class="history-meta-item"><span class="history-meta-label">来源</span><span class="history-meta-value" style="word-break:break-all">' + escapeHtml(dt.source) + '</span></div>';
+            h += '</div></div>';
+
+            // 内容区域
+            h += '<div class="history-body">';
+
+            // 摄像头快照网格
+            if (dt.result_data && dt.result_data.snapshots && dt.result_data.snapshots.length > 0) {
+                h += '<div class="history-section">';
+                h += '<div class="history-section-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg> 抓拍记录 (' + dt.result_data.snapshots.length + ' 张) — 点击切换预览</div>';
+                h += '<div class="snapshot-grid">';
+                dt.result_data.snapshots.forEach(function(snap, i) {
+                    h += '<div class="snapshot-card' + (i === currentMediaIndex ? ' active' : '') + '" onclick="selectMediaItem(' + i + ')">';
+                    h += '<img src="' + snap.result_image + '" alt="抓拍 #' + snap.index + '" loading="lazy">';
+                    h += '<div class="snapshot-card-info">';
+                    h += '<span class="snapshot-card-dets">' + snap.detections_count + ' 个目标</span>';
+                    h += '<span class="snapshot-card-time">' + snap.timestamp + '</span>';
+                    h += '</div></div>';
+                });
+                h += '</div></div>';
+            }
+
+            // 检测详情表格
+            if (dt.result_data && dt.result_data.detections && dt.result_data.detections.length > 0) {
+                h += '<div class="history-section">';
+                h += '<div class="history-section-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg> 检测结果详情</div>';
+
+                // 检测统计摘要
+                var classCount = {};
+                dt.result_data.detections.forEach(function(d) {
+                    classCount[d.class_name] = (classCount[d.class_name] || 0) + 1;
+                });
+                h += '<div class="detection-summary">';
+                Object.keys(classCount).forEach(function(cls) {
+                    h += '<div class="detection-chip"><span class="class-tag">' + escapeHtml(cls) + '</span><span class="detection-chip-count">' + classCount[cls] + '</span></div>';
+                });
+                h += '</div>';
+
+                // 详情表格
+                h += '<div style="margin-top:16px">';
+                h += '<table style="width:100%;border-collapse:collapse">';
+                h += '<thead><tr style="background:var(--bg)">';
+                h += '<th style="padding:10px 12px;text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text3)">#</th>';
+                h += '<th style="padding:10px 12px;text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text3)">类别</th>';
+                h += '<th style="padding:10px 12px;text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text3)">置信度</th>';
+                h += '<th style="padding:10px 12px;text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text3)">位置</th>';
+                h += '</tr></thead><tbody>';
+                dt.result_data.detections.forEach(function(det, i) {
+                    var cf = det.confidence;
+                    var cc = cf >= 0.7 ? 'var(--success)' : cf >= 0.5 ? 'var(--warning)' : 'var(--danger)';
+                    var bg = cf >= 0.7 ? 'var(--success-bg)' : cf >= 0.5 ? 'var(--warning-bg)' : 'var(--danger-bg)';
+                    h += '<tr style="border-bottom:1px solid var(--border-light)">';
+                    h += '<td style="padding:10px 12px;font-size:13px">' + (i + 1) + '</td>';
+                    h += '<td style="padding:10px 12px"><span class="class-tag">' + escapeHtml(det.class_name) + '</span></td>';
+                    h += '<td style="padding:10px 12px"><span class="conf-badge" style="background:' + bg + ';color:' + cc + '">' + (cf * 100).toFixed(1) + '%</span></td>';
+                    h += '<td style="padding:10px 12px;font-family:monospace;font-size:12px;color:var(--text3)">' + det.bbox.map(function(v) { return Math.round(v); }).join(', ') + '</td>';
+                    h += '</tr>';
+                });
+                h += '</tbody></table></div>';
+                h += '</div>';
+            }
+
+            // 批量检测结果
+            if (dt.result_data && dt.result_data.results && dt.result_data.results.length > 0) {
+                h += '<div class="history-section">';
+                var batchTotalImgs = dt.result_data.total_images || 0;
+                var batchTotalVids = dt.result_data.total_videos || 0;
+                var batchDesc = batchTotalImgs + ' 图片' + (batchTotalVids > 0 ? ' + ' + batchTotalVids + ' 视频' : '');
+                h += '<div class="history-section-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg> 批量结果 (' + batchDesc + ') — 点击切换预览</div>';
+                h += '<div class="batch-result-grid">';
+                dt.result_data.results.forEach(function(br, i) {
+                    h += '<div class="batch-item batch-item-clickable' + (i === currentMediaIndex ? ' active' : '') + '" onclick="selectMediaItem(' + i + ')">';
+                    h += '<div class="batch-item-idx">' + (i + 1) + '</div>';
+                    h += '<div class="batch-item-info">';
+                    h += '<div class="batch-item-name">' + (br.type === 'video' ? '🎬 ' : '🖼 ') + escapeHtml(br.filename) + '</div>';
+                    h += '<div class="batch-item-dets">' + br.detections_count + ' 个目标' + (br.detections && br.detections.length > 0 ? ' · ' + br.detections.map(function(d) { return d.class_name; }).join(', ') : '') + '</div>';
+                    h += '</div></div>';
+                });
+                h += '</div></div>';
+            }
+
+            h += '</div>';
+
+            // 操作栏
+            h += '<div class="history-actions">';
+            h += '<a href="/" class="btn-secondary" style="text-decoration:none">返回首页</a>';
+            h += '<button class="btn-danger" onclick="deleteHistory(\'' + dt.id + '\')">';
+            h += '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>';
+            h += ' 删除此记录</button>';
+            h += '</div>';
+
+            h += '</div>';
+            page.innerHTML = h;
+        }
+
+        async function deleteHistory(id) {
+            if (!confirm('确定删除此检测记录及其结果文件？此操作不可撤销！')) return;
+            try {
+                const r = await fetch('/api/history/' + id, { method: 'DELETE' });
+                const d = await r.json();
+                if (d.success) {
+                    toast('success', '记录已删除');
+                    setTimeout(() => { window.location.href = '/'; }, 800);
+                } else { toast('error', d.error); }
+            } catch (e) { toast('error', '删除失败'); }
+        }
+
+        // 键盘左右箭头导航
+        document.addEventListener('keydown', function(e) {
+            if (mediaItems.length > 1 && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+                e.preventDefault();
+                selectMediaItem(currentMediaIndex + (e.key === 'ArrowLeft' ? -1 : 1));
+            }
+        });
+
+        loadDetail();
+    </script>
+</body>
+</html>

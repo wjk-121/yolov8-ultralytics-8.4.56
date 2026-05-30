@@ -1,132 +1,127 @@
 # CLAUDE.md
 
-本文件为 Claude Code (claude.ai/code) 在本仓库中工作时提供指导。
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 项目概述
+## Project Overview
 
-Ultralytics YOLOv8 (v8.4.56) — 一个计算机视觉框架，支持目标检测、实例分割、语义分割、图像分类、姿态估计、有向边界框检测和目标跟踪。采用 AGPL-3.0 许可证。
+Fork of Ultralytics YOLOv8 (v8.4.56) with a custom Flask web application for inference. Chinese-language UI targeting PCB defect detection and autonomous vehicle competition use cases. License: AGPL-3.0.
 
-## 开发命令
+Web app is at v5 iteration — polling-based video detection, camera session grouping, mixed image/video batch upload, standalone history detail pages.
 
-### 安装（可编辑模式，包含开发依赖）
-
-```bash
-pip install -e ".[dev,export,solutions]"
-```
-
-### 运行测试
+## Development Commands
 
 ```bash
-# 标准并行运行（带覆盖率报告）
-pytest -n auto --dist=loadfile --cov=ultralytics/ --cov-report=xml tests/
+# Install in editable mode (required for development)
+pip install -e .
 
-# 包含慢速测试（通过 --slow 标志启用）
-pytest -n auto --dist=loadfile --slow --cov=ultralytics/ tests/
+# Install with optional dependencies
+pip install -e ".[dev]"          # pytest, coverage, ruff
+pip install -e ".[export]"       # ONNX, TensorRT, CoreML, etc.
 
-# 运行单个测试文件
-pytest tests/test_python.py -v -s
+# Web application dependencies (NOT in pyproject.toml)
+pip install flask flask-cors waitress imageio-ffmpeg
 
-# 运行单个测试函数
-pytest tests/test_python.py::test_function_name -v -s
+# Run the web application (Waitress on port 5000)
+python app/web_app.py
 
-# 仅运行 CUDA 测试
-pytest tests/test_cuda.py -sv
+# CLI inference via ultralytics entrypoint
+yolo detect predict model=yolov8n.pt source=image.jpg
+yolo segment predict model=yolov8n-seg.pt source=image.jpg
+
+# Training
+yolo detect train data=coco128.yaml model=yolov8n.pt epochs=100
+
+# Export model
+yolo export model=yolov8n.pt format=onnx
+
+# Validation
+yolo detect val model=yolov8n.pt data=coco128.yaml
 ```
 
-### 代码检查与格式化
+No test suite is present in this fork. The `pyproject.toml` configures pytest but the `tests/` directory was not included.
 
-```bash
-# Ruff（主要的 linter/formatter，行宽 120，Google 风格文档字符串）
-ruff check ultralytics/
-ruff format ultralytics/
+## Architecture
 
-# 拼写检查
-codespell ultralytics/
-```
+### Layered Structure
 
-## 架构设计
+1. **CLI/API** (`ultralytics/cfg/__init__.py`) — `entrypoint()` parses CLI args, dispatches by task+mode. Tasks: `detect`, `segment`, `classify`, `pose`, `obb`, `semantic`. Modes: `train`, `val`, `predict`, `export`, `benchmark`, `track`.
 
-所有源代码位于 `ultralytics/` 目录下，采用分层架构：
+2. **Model abstraction** (`ultralytics/engine/model.py`) — `Model` base class wraps all operations: `train()`, `val()`, `predict()`, `export()`, `track()`. Instantiated via `YOLO("model.pt")`.
 
-### 配置层 (`ultralytics/cfg/`)
+3. **Task implementations** (`ultralytics/models/yolo/{detect,segment,classify,pose,obb,semantic}/`) — Each directory contains `predict.py`, `train.py`, `val.py` with task-specific subclasses of the engine base classes.
 
-- `__init__.py` — CLI 入口点（`yolo`/`ultralytics` 命令），参数解析，配置验证
-- `default.yaml` — 所有默认超参数（训练、验证、预测、导出、数据增强）
-- `datasets/` — 40+ 个 YAML 数据集配置（COCO、VOC、ImageNet 等）
-- `models/` — 按版本组织的 YAML 模型架构定义（v3–v26、rt-detr）
+4. **Neural network** (`ultralytics/nn/`) — YAML-driven model construction in `tasks.py` (`parse_model()` builds layers from YAML). Building blocks in `modules/` (conv.py, block.py, head.py). 16 inference backends in `backends/` via `autobackend.py`.
 
-### 引擎层 (`ultralytics/engine/`)
+5. **Data pipeline** (`ultralytics/data/`) — `BaseDataset` → `YOLODataset`. Augmentation in `augment.py` (137KB). Loaders in `loaders.py`.
 
-核心框架类，其他所有模块都基于此构建：
+6. **Utilities** (`ultralytics/utils/`) — Metrics (`metrics.py`), loss functions (`loss.py`), NMS (`ops.py`, `nms.py`), plotting, distributed training, 10+ logging callback integrations.
 
-- `model.py` — `Model` 基类（继承 `torch.nn.Module`）；统一的训练/验证/预测/导出/基准测试/调优 API
-- `trainer.py` — `BaseTrainer`；训练循环、分布式数据并行（DDP）、指数移动平均（EMA）、检查点保存、学习率调度
-- `validator.py` — `BaseValidator`；验证循环
-- `predictor.py` — `BasePredictor`；推理管线
-- `exporter.py` — `Exporter`；导出到 17+ 种格式（ONNX、TensorRT、CoreML 等）
-- `results.py` — `Results`；检测/分割/姿态结果容器，含绘图功能
+7. **Solutions** (`ultralytics/solutions/`) — Ready-made CV apps: object counting, heatmaps, speed estimation, parking management, etc.
 
-### 神经网络层 (`ultralytics/nn/`)
+### Custom Application Layer (Web App v5)
 
-- `tasks.py` — 通过 `parse_model()` 从 YAML 配置构建模型；包含 `DetectionModel`、`SegmentationModel`、`ClassificationModel`、`PoseModel`、`OBBModel`、`SemanticSegmentationModel`、`WorldModel`、`YOLOEModel`
-- `autobackend.py` — `AutoBackend`，统一所有导出格式的推理接口
-- `modules/` — 构建模块：`block.py`（C2f、SPPF、CSP）、`head.py`（检测/分割/姿态头）、`conv.py`（Conv 变体）、`transformer.py`（注意力模块）
-- `backends/` — 17 种后端特定的推理封装（PyTorch、ONNX、TensorRT、OpenVINO、CoreML、TFLite、NCNN 等）
+**Backend** ([app/web_app.py](app/web_app.py)):
 
-### 模型实现 (`ultralytics/models/`)
+- Flask + Waitress on port 5000, CORS enabled
+- 19 API endpoints covering: image/batch/URL/video/camera detection, model selection, config management, history CRUD, file serving
+- **Config** class: `confidence` (default 0.25), `iou_threshold` (default 0.7). `image_size` removed — YOLO uses original image dimensions.
+- **Model dictionary**: 25 YOLOv8 variants (detect/seg/pose/cls/obb × n/s/m/l/x), auto-download to `models/`
+- **`_ensure_dirs()`** helper: re-creates `temp/`, `runs/detect/`, `uploads/` before every file-writing endpoint. Critical — the `temp/` directory can disappear between runs, causing FileNotFoundError on all file saves.
+- **Video detection**: Polling pattern (not SSE — SSE is broken on Waitress/WSGI due to buffering and hop-by-hop header restrictions). `POST /api/detect/video` uploads + starts background `threading.Thread` processing, returns `job_id`. Frontend polls `GET /api/detect/video/status/<job_id>` at 300ms intervals. After frame processing completes, uses `imageio_ffmpeg` to re-encode from `mp4v` to H.264 (required for browser playback).
+- **Async model download**: `YOLO("model.pt")` constructor downloads models synchronously over HTTP, which freezes the UI for ~90s on network errors. `load_model_safe()` spawns a background `_download_worker(name)` thread and returns immediately. Frontend polls `GET /api/models/download-status/<name>` with animated progress dots, auto-completes on download finish. Job state tracked in `_download_jobs` dict.
+- **`_create_video_writer()` helper**: Wraps H264 codec probing with `os.dup2` stderr → `/dev/null` redirection to suppress OpenH264 C-level warnings. Falls back to `mp4v` if H264 unavailable. All video writer call sites (batch + single video) must use this helper.
+- **Batch detection**: Supports mixed image/video uploads. Classifies files by extension, processes images via `model.predict()` in batch, videos sequentially via OpenCV frame-by-frame.
+- **Camera sessions**: Multiple snapshots grouped into single history record (`_camera_sessions` dict). Finalized on stop, auto-expires after 30min timeout.
+- **History**: File-system-backed via `runs/detect/<id>/metadata.json`. Lightweight polling endpoint `/api/history/check` returns only latest record's `mtime` for change detection.
+- **History detail**: Served via standalone page at `/history/<id>` → `static/history.html`
 
-每个任务都有独立子目录，包含任务特定的 Trainer/Validator/Predictor：
+**Frontend** ([static/](static/)):
 
-- `yolo/detect/`、`yolo/segment/`、`yolo/classify/`、`yolo/pose/`、`yolo/obb/`、`yolo/semantic/`
-- `yolo/world/` — YOLO-World（开放词汇检测）
-- `yolo/yoloe/` — YOLOE（视觉/文本提示检测/分割）
-- `rtdetr/`、`sam/`、`fastsam/`、`nas/` — 替代模型架构
+- [index.html](static/index.html) — SPA shell: navbar, sidebar (model info, 5 detection modes, confidence/IoU sliders, history list), content area
+- [app.js](static/app.js) — State management via `state` object, polling-based video progress (300ms interval, ETA display), camera toggle with `toggleCamera()`, file size warning (>10MB), batch mixed file upload (`accept='image/*,video/*'`), async model download polling with `pollDownloadProgress()`, media viewer with arrow-key navigation for batch results (`showBatchItemPreview()`, `navigateBatchPreview()`)
+- [history.html](static/history.html) — Unified media viewer for history detail: `buildMediaItems()` constructs flat `mediaItems` array from snapshots, batch results, or single result; `selectMediaItem(index)` switches hero view with wrapping; `renderMediaViewerInner()` renders arrows + video/image; arrow-key navigation; old-record compatibility via regex extension correction (`.png/.bmp/.webp/.tiff` → `.jpg`)
+- [style.css](static/style.css) — Apple-inspired design with CSS custom properties, responsive sidebar, smooth progress bar animation, media viewer nav button styles (`.media-nav-btn`, `.media-prev/.media-next`), batch row hover/selected states
 
-每个模型类中的 `task_map` 字典将任务名称映射到对应的 Model/Trainer/Validator/Predictor 类。
+**CLI Tool** ([app/yolo_app.py](app/yolo_app.py)):
 
-### 数据层 (`ultralytics/data/`)
+- Independent terminal application with colored UI, 10 menu options, in-memory history (not disk-backed)
 
-- `dataset.py` — `BaseDataset`、`YOLODataset`
-- `augment.py` — 所有数据增强变换（马赛克、混 MixUp、复制粘贴、HSV、几何变换）
-- `loaders.py` — 图像/视频/流加载器
-- `converter.py` — 格式转换器（COCO→YOLO、DOTA 等）
+### Configuration System
 
-### 工具层 (`ultralytics/utils/`)
+- `ultralytics/cfg/default.yaml` — Global defaults for all training/validation/prediction parameters.
+- `ultralytics/cfg/models/{v3,v5,v6,v8,v9,v10,11,12,26,rt-detr}/*.yaml` — Model architecture definitions. YAML specifies layer-by-layer construction parsed by `nn/tasks.py:parse_model()`.
+- `ultralytics/cfg/datasets/*.yaml` — 42 dataset configs (paths, class names, augmentation).
+- `ultralytics/cfg/trackers/*.yaml` — BoT-SORT and ByteTrack configs.
 
-- `metrics.py` — AP、mAP、混淆矩阵、F1、P/R 曲线
-- `loss.py` — 检测损失、分割损失、姿态损失、DFL
-- `ops.py` — NMS、边界框变换、掩码操作
-- `torch_utils.py` — PyTorch 工具、FLOPs 计算、性能分析、DDP
-- `callbacks/` — 10 种回调集成（TensorBoard、W&B、MLflow、ClearML 等）
+### Supported Model Generations
 
-## CLI 使用模式
+YOLOv3, YOLOv5, YOLOv6, YOLOv8, YOLOv9, YOLOv10, YOLO11, YOLO12, YOLO26, RT-DETR, SAM/SAM3, FastSAM, NAS, YOLOWorld, YOLOE.
 
-```bash
-yolo TASK MODE ARGS
-```
+## Key Patterns
 
-- 任务：`detect`、`segment`、`classify`、`pose`、`obb`、`semantic`
-- 模式：`train`、`val`、`predict`、`export`、`track`、`benchmark`
+- **Lazy imports**: `ultralytics/__init__.py` uses `__getattr__` for lazy model class loading.
+- **Settings persistence**: `ultralytics/utils/__init__.py` manages `SETTINGS` dict persisted to `~/.config/Ultralytics/settings.json`.
+- **Monkey-patching**: `ultralytics/utils/patches.py` patches cv2, torch, and other libraries at import time.
+- **Callback system**: `ultralytics/utils/callbacks/` — hook-based system for training lifecycle events (on_train_start, on_epoch_end, etc.). Integrations for TensorBoard, W&B, MLflow, ClearML, Comet, Neptune, DVC, Ray Tune.
+- **Device auto-detection**: `ultralytics/utils/autodevice.py` and `autobatch.py` handle GPU/CPU selection and batch size optimization.
+- **Media viewer navigation**: Unified `mediaItems` array pattern across batch preview (app.js), history detail (history.html), and camera snapshots. Clickable thumbnails/rows call `selectMediaItem(i)` / `showBatchItemPreview(i)`. Arrow-key navigation with wrapping: `(currentIndex + direction + total) % total`. Active state highlighting via CSS `.snapshot-card.active` / `.batch-result-row.selected`.
 
-```python
-from ultralytics import YOLO
-model = YOLO("yol26n.pt")
-model.train(data="coco8.yaml", epochs=100)
-model.predict("image.jpg")
-```
+## Known Gotchas & Pitfalls
 
-## 代码风格
+- **`temp/` directory fragility**: The `temp/` directory can disappear between server runs. Always use `_ensure_dirs()` before file writes, or call `mkdir(parents=True, exist_ok=True)`.
+- **SSE does NOT work with Waitress**: Waitress buffers WSGI responses and rejects hop-by-hop headers (`Connection`). Do not use EventSource/SSE — use polling instead.
+- **`mp4v` codec video won't play in browsers**: OpenCV's default MPEG-4 Part 2 codec is browser-incompatible. Requires `imageio-ffmpeg` for H.264 re-encoding. The video detection code auto-attempts this — check the `playable` flag in the response.
+- **OpenH264 console noise**: `os.environ['OPENCV_FFMPEG_LOGLEVEL'] = '-8'` MUST be set BEFORE `import cv2` — ultralytics imports cv2 internally, and the FFMPEG backend initializes on first import. Additionally, `cv2.VideoWriter_fourcc(*'H264')` calls produce C-level stderr output. The `_create_video_writer()` helper wraps H264 probing with `os.dup2` stderr→`/dev/null` redirection. Always use this helper instead of directly creating video writers. Also call `cv2.setLogLevel(0)` after import for extra silencing.
+- **YOLO `save=True` always outputs `.jpg`**: `model.predict(save=True)` saves ALL annotated images as `.jpg` regardless of source format (`.png`, `.bmp`, `.webp`, `.tiff`). When building result URLs from `Path` objects, use `tp.stem + '.jpg'` — never `tp.name`. Old history records may still reference original extensions; add regex fallback (`.png/.bmp/.webp/.tiff` → `.jpg`) for backward compatibility.
+- **`YOLO()` constructor downloads synchronously**: When a model file is missing locally, `YOLO("model.pt")` triggers a synchronous HTTP download that retries 3 times (~90s). With GitHub unreachable in China, this freezes the entire request thread. Use `load_model_safe(name)` which spawns `_download_worker()` in a daemon thread + returns immediately. Frontend should poll `GET /api/models/download-status/<name>` (same polling pattern as video detection).
+- **Inline onclick with innerHTML is fragile**: Use `addEventListener` or `DOMContentLoaded`-bound handlers instead. Quote escaping in innerHTML strings often breaks.
+- **Video detection is blocking per frame**: Each YOLO `predict()` call on a single frame blocks. Keep the polling-based architecture — don't switch back to synchronous HTTP responses for video.
+- **Windows Chinese filenames in paths**: Files with Chinese characters in names (e.g., "屏幕截图") work fine with `Path` objects, but avoid shell commands that might misinterpret encoding.
 
-- **行宽：** 120 个字符
-- **文档字符串：** Google 风格（`[tool.ruff.lint.pydocstyle] convention = "google"`）
-- **格式化：** Ruff（无 pre-commit 钩子；CI 通过 `ultralytics/actions` 强制执行）
-- **惰性导入：** 模型类（`YOLO`、`SAM`、`RTDETR` 等）通过 `ultralytics/__init__.py` 中的 `__getattr__` 惰性加载
+## Environment
 
-## 关键约定
-
-- 模型架构定义在 `ultralytics/cfg/models/` 下的 YAML 配置中，由 `nn/tasks.py:parse_model()` 解析
-- `engine/model.py` 中的 `Model` 基类通过 `task_map` 分发到任务特定实现
-- 训练默认值在 `ultralytics/cfg/default.yaml` 中；CLI 参数可覆盖这些默认值
-- `utils/__init__.py` 中的 `RANK` 变量控制分布式训练行为（-1 表示单 GPU）
-- `utils/__init__.py` 中的 `SETTINGS` 字典将用户偏好持久化到磁盘
-- 测试使用 `isolated_model` 固件（将模型复制到临时目录）以避免 `pytest-xdist` 下的文件竞争
+- Python ≥ 3.8 (supports 3.8–3.12)
+- Conda is the configured environment manager (see `.vscode/settings.json`)
+- Core deps: PyTorch, OpenCV, NumPy, Matplotlib, PyYAML, Requests, SciPy, Polars
+- Web app additionally requires: flask, flask-cors, waitress, imageio-ffmpeg (not in pyproject.toml)
+- Windows-specific: PyTorch 2.4.0 excluded due to CPU errors

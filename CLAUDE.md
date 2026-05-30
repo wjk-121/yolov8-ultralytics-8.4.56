@@ -2,14 +2,25 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Repository
+## Repository & Remote
 
-- **GitHub**: https://github.com/wjk-121/yolov8-ultralytics-8.4.56
-- **Remote**: `origin` → `https://github.com/wjk-121/yolov8-ultralytics-8.4.56.git`
-- **Local path**: `d:\yolov8-ultralytics-8.4.56`
-- **GitHub user**: wjk-121
-- **Platform**: Windows 11 (conda environments)
-- **Editor**: VS Code
+| 项目 | 值 |
+| --- | --- |
+| **仓库地址** | `https://github.com/wjk-121/yolov8-ultralytics-8.4.56` |
+| **远程名称** | `origin` |
+| **默认分支** | `main` |
+| **所有者** | `wjk-121` |
+| **项目根目录** | `d:/yolov8-ultralytics-8.4.56` (Windows) |
+
+**常见 Git 操作：**
+
+```bash
+git add -A && git commit -m "message" && git push origin main
+# 远程先行提交 (GitHub 网页操作) 导致冲突时:
+git pull origin main --no-edit && git push origin main
+# 本地完全覆盖远程 (谨慎):
+git push -u origin main --force
+```
 
 ## Project Overview
 
@@ -17,37 +28,60 @@ Fork of Ultralytics YOLOv8 (v8.4.56) with a custom Flask web application for inf
 
 Web app is at v5 iteration — polling-based video detection, camera session grouping, mixed image/video batch upload, standalone history detail pages, custom model support.
 
+## Environment
+
+- **操作系统**: Windows 11 Pro (10.0.26200)
+- **Shell**: Bash (Git for Windows / MinGW) — 使用 Unix 风格路径 `/` 分隔
+- **Python**: 3.13.3 (系统级安装, `C:/Program Files/Python313/python`)
+- **包管理**: pip (系统 Python) + Conda (备用, 已安装但 web 应用使用系统 Python)
+- **Conda 环境** (如需要):
+  - `base` — `C:/Users/WJK-PC/anaconda3`
+  - `yolov11` — `C:/Users/WJK-PC/anaconda3/envs/yolov11`
+  - `cnn_pruning_GPU` — `C:/Users/WJK-PC/anaconda3/envs/cnn_pruning_GPU`
+- **VS Code**: 配置了 Conda 作为默认 Python 环境管理器
+- **核心依赖**: PyTorch, OpenCV, NumPy, Matplotlib, PyYAML, Requests, SciPy, Polars
+- **Web 应用额外依赖** (不在 pyproject.toml 中): flask, flask-cors, waitress, imageio-ffmpeg
+- **Python 版本要求**: ≥ 3.8 (支持 3.8–3.12)
+- **Windows 特定**: PyTorch 2.4.0 因 CPU 兼容性错误被排除
+
 ## Development Commands
 
 ```bash
-# Install in editable mode (required for development)
-pip install -e .
-
-# Install with optional dependencies
-pip install -e ".[dev]"          # pytest, coverage, ruff
-pip install -e ".[export]"       # ONNX, TensorRT, CoreML, etc.
-
-# Web application dependencies (NOT in pyproject.toml)
-pip install flask flask-cors waitress imageio-ffmpeg
-
-# Run the web application (Waitress on port 5000)
+# 启动 Web 服务器 (Flask + Waitress, 端口 5000)
 python app/web_app.py
 
-# CLI inference via ultralytics entrypoint
+# 安装 ultralytics 包 (可编辑模式)
+pip install -e .
+
+# 安装 Web 应用依赖
+pip install flask flask-cors waitress imageio-ffmpeg
+
+# CLI 推理
 yolo detect predict model=yolov8n.pt source=image.jpg
 yolo segment predict model=yolov8n-seg.pt source=image.jpg
 
-# Training
+# 训练 / 导出 / 验证
 yolo detect train data=coco128.yaml model=yolov8n.pt epochs=100
-
-# Export model
 yolo export model=yolov8n.pt format=onnx
-
-# Validation
 yolo detect val model=yolov8n.pt data=coco128.yaml
 ```
 
-No test suite is present in this fork. The `pyproject.toml` configures pytest but the `tests/` directory was not included.
+无测试套件。`pyproject.toml` 配置了 pytest 但 `tests/` 目录未包含。
+
+## Runtime Directory Layout
+
+以下目录由应用在运行时自动创建，已被 `.gitignore` 排除：
+
+```text
+models/         # 下载的 YOLO 模型权重 (.pt)
+temp/           # 临时文件 (检测结果中间文件)
+uploads/        # 用户上传文件
+runs/detect/    # 检测历史记录 (metadata.json + 结果图片/视频)
+data/samples/   # 示例图片缓存
+.claude/        # Claude Code 本地配置
+```
+
+`static/img/logo.png` 也被 gitignore (`.png` 规则) — 用户自定义 logo 不进入版本控制。
 
 ## Architecture
 
@@ -134,16 +168,8 @@ YOLOv3, YOLOv5, YOLOv6, YOLOv8, YOLOv9, YOLOv10, YOLO11, YOLO12, YOLO26, RT-DETR
 
 ## Environment
 
-- **OS**: Windows 11 Pro (10.0.26200)
-- **Shell**: bash (Git Bash / MSYS2), not cmd or PowerShell
-- **Python**: ≥ 3.8 (supports 3.8–3.12). Primary env: system Python in `/c/Program Files/Python313/`
-- **Conda envs**: `base`, `cnn_pruning_GPU`, `yolov11` (see `.vscode/settings.json`)
-- **Package manager**: pip + conda
-- **Core deps**: PyTorch, OpenCV, NumPy, Matplotlib, PyYAML, Requests, SciPy, Polars
-- **Web app deps**: flask, flask-cors, waitress, imageio-ffmpeg (NOT in pyproject.toml — install separately)
-- **Windows-specific**: PyTorch 2.4.0 excluded due to CPU errors. File paths use forward slashes. Chinese filename encoding works with `Path` objects but avoid in shell commands.
-- **Server**: Flask + Waitress on `http://localhost:5000`. Access via browser at this URL, NOT `file:///` protocol.
-
-## Session Context (Auto-loaded)
-
-When starting a new session, Claude Code automatically loads this `CLAUDE.md` plus the memory index at `memory/MEMORY.md`. Key project facts are persisted in the memory system — no need to re-explain project basics.
+- Python ≥ 3.8 (supports 3.8–3.12)
+- Conda is the configured environment manager (see `.vscode/settings.json`)
+- Core deps: PyTorch, OpenCV, NumPy, Matplotlib, PyYAML, Requests, SciPy, Polars
+- Web app additionally requires: flask, flask-cors, waitress, imageio-ffmpeg (not in pyproject.toml)
+- Windows-specific: PyTorch 2.4.0 excluded due to CPU errors

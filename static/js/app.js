@@ -1,5 +1,5 @@
 /** YOLOv8 Web App v5 — 优化进度条/历史刷新/批量混搭 */
-const state={mode:'image',config:null,model:null,history:[],_latestMtime:null,detecting:false,cameraStream:null,cameraActive:false,cameraTimer:null,cameraFpsTimer:null,cameraFrameCount:0,_lastCameraDets:[],_lastCameraB64:'',cameraSessionId:null,cameraSnapshotCount:0,_batchMediaItems:[],_batchMediaIndex:0,_previewMode:false};
+const state={mode:'image',config:null,model:null,history:[],_latestMtime:null,_latestCount:0,detecting:false,cameraStream:null,cameraActive:false,cameraTimer:null,cameraFpsTimer:null,cameraFrameCount:0,_lastCameraDets:[],_lastCameraB64:'',cameraSessionId:null,cameraSnapshotCount:0,_batchMediaItems:[],_batchMediaIndex:0,_previewMode:false};
 document.addEventListener('DOMContentLoaded',()=>{init();setupUpload();setupKeyboard()});
 
 async function init(){
@@ -10,7 +10,10 @@ async function init(){
 }
 
 async function checkHistoryUpdate(){
-    try{const r=await fetch('/api/history/check');const d=await r.json();if(d.success&&d.data.latest){if(state._latestMtime!==d.data.latest.mtime){await loadHistory()}}}catch(e){/* 静默失败 */}
+    try{const r=await fetch('/api/history/check');const d=await r.json();if(d.success){
+        var count=d.data.total||0;
+        if(state._latestCount!==count){await loadHistory()}
+    }}catch(e){/* 静默失败 */}
 }
 
 function setupUpload(){
@@ -284,7 +287,7 @@ function hideResults(){document.getElementById('resultArea').style.display='none
 // ── 模型/配置弹窗 ───────────────────────────────────────────────────────
 function updateModelDisplay(){const m=state.model;document.getElementById('modelName').textContent=m.model_info.name||m.current_model;document.getElementById('modelDesc').textContent=m.model_info.desc||''}
 function updateStatus(){const d=document.getElementById('statusDot'),t=document.getElementById('statusText');if(state.model&&state.model.is_model_loaded){d.className='status-dot active';t.textContent='已就绪'}else{d.className='status-dot error';t.textContent='未加载'}}
-function updateSliders(){if(!state.config)return;document.getElementById('confVal').textContent=state.config.confidence.toFixed(2);document.getElementById('confSlider').value=state.config.confidence;if(state.config.iou_threshold!==undefined){document.getElementById('iouVal').textContent=state.config.iou_threshold.toFixed(2);document.getElementById('iouSlider').value=state.config.iou_threshold}}
+function updateSliders(){if(!state.config)return;document.getElementById('confVal').textContent=state.config.confidence.toFixed(2);document.getElementById('confSlider').value=state.config.confidence}
 async function showModelModal(){showLoading('加载模型列表...');try{const r=await fetch('/api/models');const d=await r.json();if(d.success){renderModelList(d.data);document.getElementById('modelModal').classList.add('active')}}catch(e){toast('error','加载失败')}finally{hideLoading()}}
 function closeModelModal(){document.getElementById('modelModal').classList.remove('active')}
 function renderModelList(d){document.getElementById('localCnt').textContent=d.stats.local;document.getElementById('remoteCnt').textContent=d.stats.remote;var l=document.getElementById('modelList');l.innerHTML='';d.models.forEach(function(m){var item=document.createElement('div');item.className='model-item'+(m.is_current?' active':'');var delBtn=m.is_local?'<button class="model-del-btn" title="删除本地模型" onclick="event.stopPropagation();deleteModel(\''+m.name+'\')">×</button>':'';var checkMark=m.is_current?'<div class="model-check">✓</div>':'';item.innerHTML='<div class="model-item-info"><div class="model-item-name">'+m.full_name+'</div><div class="model-item-desc">'+m.desc+' · '+m.params+' · '+m.num_classes+'类</div></div><div class="model-item-meta"><span>'+(m.is_local?'本地('+m.size_mb+'MB)':'需下载')+'</span></div>'+delBtn+checkMark;item.addEventListener('click',function(){selectModel(m.name)});l.appendChild(item)})}
@@ -294,21 +297,20 @@ function pollDownloadProgress(name,modelName){showLoadingProgress('正在下载 
 
 async function deleteModel(name){if(!confirm('确定要删除模型 '+name+' 吗？'))return;try{const r=await fetch('/api/models/'+name,{method:'DELETE'});const d=await r.json();if(d.success){toast('success',d.message);const sr=await fetch('/api/status');const sd=await sr.json();if(sd.success){state.model=sd.data;state.config=sd.data.config;updateModelDisplay();updateStatus()}showModelModal()}else toast('error',d.error)}catch(e){toast('error','删除失败: '+e.message)}}
 
-function showConfigModal(){document.getElementById('cfgConf').value=state.config.confidence;document.getElementById('cfgIou').value=state.config.iou_threshold;document.getElementById('configModal').classList.add('active')}
+function showConfigModal(){document.getElementById('cfgConf').value=state.config.confidence;document.getElementById('configModal').classList.add('active')}
 function closeConfigModal(){document.getElementById('configModal').classList.remove('active')}
-async function saveConfig(){const nc={confidence:parseFloat(document.getElementById('cfgConf').value),iou_threshold:parseFloat(document.getElementById('cfgIou').value)};try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(nc)});const d=await r.json();if(d.success){state.config=d.data;updateSliders();closeConfigModal();toast('success','配置已保存')}}catch(e){toast('error','保存失败')}}
+async function saveConfig(){const nc={confidence:parseFloat(document.getElementById('cfgConf').value)};try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(nc)});const d=await r.json();if(d.success){state.config=d.data;updateSliders();closeConfigModal();toast('success','配置已保存')}}catch(e){toast('error','保存失败')}}
 async function resetConfig(){try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confidence:0.25,iou_threshold:0.7})});const d=await r.json();if(d.success){state.config=d.data;showConfigModal();updateSliders();toast('success','已恢复默认配置')}}catch(e){toast('error','恢复失败')}}
 function updateConf(v){document.getElementById('confVal').textContent=parseFloat(v).toFixed(2);state.config.confidence=parseFloat(v);fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confidence:parseFloat(v)})})}
-function updateIou(v){document.getElementById('iouVal').textContent=parseFloat(v).toFixed(2);state.config.iou_threshold=parseFloat(v);fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({iou_threshold:parseFloat(v)})})}
 
 // ── 历史 ────────────────────────────────────────────────────────────────
 async function loadHistory(){
-    try{const r=await fetch('/api/history');const d=await r.json();if(d.success){state.history=d.data.history;renderHistory();if(d.data.history&&d.data.history.length>0)state._latestMtime=Date.now()/1000}}catch(e){console.error(e)}
+    try{const r=await fetch('/api/history');const d=await r.json();if(d.success){state.history=d.data.history;renderHistory();state._latestCount=d.data.total||d.data.history.length}}catch(e){console.error(e)}
 }
 
 function renderHistory(){
     const l=document.getElementById('historyList');l.innerHTML='';
-    if(!state.history||state.history.length===0){l.innerHTML='<div style="padding:10px;color:var(--text3);font-size:12px">暂无检测记录</div>';return}
+    if(!state.history||state.history.length===0){l.innerHTML='<div class="history-empty">暂无检测记录</div>';return}
     state.history.forEach(it=>{
         const el=document.createElement('div');el.className='history-item';
         let ic='';

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Fork of Ultralytics YOLOv8 (v8.4.56) with a custom Flask web application for inference. Chinese-language UI targeting PCB defect detection and autonomous vehicle competition use cases. License: AGPL-3.0.
 
-Web app is at v5 iteration — polling-based video detection, camera session grouping, mixed image/video batch upload, standalone history detail pages.
+Web app is at v5 iteration — polling-based video detection, camera session grouping, mixed image/video batch upload, standalone history detail pages, custom model support.
 
 ## Development Commands
 
@@ -63,24 +63,29 @@ No test suite is present in this fork. The `pyproject.toml` configures pytest bu
 **Backend** ([app/web_app.py](app/web_app.py)):
 
 - Flask + Waitress on port 5000, CORS enabled
-- 19 API endpoints covering: image/batch/URL/video/camera detection, model selection, config management, history CRUD, file serving
-- **Config** class: `confidence` (default 0.25), `iou_threshold` (default 0.7). `image_size` removed — YOLO uses original image dimensions.
-- **Model dictionary**: 25 YOLOv8 variants (detect/seg/pose/cls/obb × n/s/m/l/x), auto-download to `models/`
+- 19 API endpoints covering: image/batch/URL/video/camera/sample detection, model selection, config management, history CRUD, file serving, sample pre-check
+- **Config** class: `confidence` (default 0.25), `iou_threshold` (default 0.7, not exposed in UI). `image_size` removed — YOLO uses original image dimensions.
+- **Model dictionary**: 25 YOLOv8 variants (detect/seg/pose/cls/obb × n/s/m/l/x) defined in [models_db.py](app/models_db.py), auto-download to `models/`. Custom `.pt` files placed in `models/` are auto-detected by `scan_local()` and listed under "自定义模型" category.
 - **`_ensure_dirs()`** helper: re-creates `temp/`, `runs/detect/`, `uploads/` before every file-writing endpoint. Critical — the `temp/` directory can disappear between runs, causing FileNotFoundError on all file saves.
 - **Video detection**: Polling pattern (not SSE — SSE is broken on Waitress/WSGI due to buffering and hop-by-hop header restrictions). `POST /api/detect/video` uploads + starts background `threading.Thread` processing, returns `job_id`. Frontend polls `GET /api/detect/video/status/<job_id>` at 300ms intervals. After frame processing completes, uses `imageio_ffmpeg` to re-encode from `mp4v` to H.264 (required for browser playback).
-- **Async model download**: `YOLO("model.pt")` constructor downloads models synchronously over HTTP, which freezes the UI for ~90s on network errors. `load_model_safe()` spawns a background `_download_worker(name)` thread and returns immediately. Frontend polls `GET /api/models/download-status/<name>` with animated progress dots, auto-completes on download finish. Job state tracked in `_download_jobs` dict.
+- **Async model download**: `YOLO("model.pt")` constructor downloads models synchronously over HTTP, which freezes the UI for ~90s on network errors. `load_model_safe()` spawns a background `_download_worker(name)` thread and returns immediately. Frontend polls `GET /api/models/download-status/<name>` (120s timeout) with animated progress dots, auto-completes on download finish. Job state tracked in `_download_jobs` dict.
+- **Model delete protection**: `DELETE /api/models/<name>` refuses (409) if model is currently active. User must switch to another model first.
+- **Custom model support**: `config.scan_local()` scans `models/*.pt`. `api_models()` adds non-MODELS files as custom entries. `config.model_info()` returns `{'name': n, 'desc': '自定义模型'}` for custom models. `api_select_model()` and `api_delete_model()` both accept custom model names if the file exists locally.
+- **Sample images**: Downloaded to `data/samples/` via `requests`. `GET /api/samples/check/<name>` pre-checks local existence (~5ms); frontend shows spinner (local) vs progress bar (downloading). Samples only available in image detection mode.
 - **`_create_video_writer()` helper**: Wraps H264 codec probing with `os.dup2` stderr → `/dev/null` redirection to suppress OpenH264 C-level warnings. Falls back to `mp4v` if H264 unavailable. All video writer call sites (batch + single video) must use this helper.
-- **Batch detection**: Supports mixed image/video uploads. Classifies files by extension, processes images via `model.predict()` in batch, videos sequentially via OpenCV frame-by-frame.
+- **Batch detection**: Supports mixed image/video uploads. Async polling pattern: `POST /api/detect/batch` returns `job_id`, frontend polls `GET /api/detect/batch/status/<job_id>`. Per-file progress: indeterminate sweep bar for images, determinate percentage for videos. Shows "processing file X of Y: filename".
 - **Camera sessions**: Multiple snapshots grouped into single history record (`_camera_sessions` dict). Finalized on stop, auto-expires after 30min timeout.
-- **History**: File-system-backed via `runs/detect/<id>/metadata.json`. Lightweight polling endpoint `/api/history/check` returns only latest record's `mtime` for change detection.
-- **History detail**: Served via standalone page at `/history/<id>` → `static/history.html`
+- **History**: File-system-backed via `runs/detect/<id>/metadata.json`. Lightweight polling endpoint `/api/history/check` returns `latest` (mtime) + `total` count. Frontend tracks `_latestCount` for change detection — triggers reload on count change (handles manual folder deletion). History detail served via standalone page at `/history/<id>` → `static/pages/history.html`
+- **Structured logging**: `logging.basicConfig()` with format `'%(asctime)s  %(message)s'`. Log variable used across all endpoints for API calls, detections, model operations, config changes, history actions.
 
 **Frontend** ([static/](static/)):
 
-- [index.html](static/index.html) — SPA shell: navbar, sidebar (model info, 5 detection modes, confidence/IoU sliders, history list), content area
-- [app.js](static/app.js) — State management via `state` object, polling-based video progress (300ms interval, ETA display), camera toggle with `toggleCamera()`, file size warning (>10MB), batch mixed file upload (`accept='image/*,video/*'`), async model download polling with `pollDownloadProgress()`, media viewer with arrow-key navigation for batch results (`showBatchItemPreview()`, `navigateBatchPreview()`)
-- [history.html](static/history.html) — Unified media viewer for history detail: `buildMediaItems()` constructs flat `mediaItems` array from snapshots, batch results, or single result; `selectMediaItem(index)` switches hero view with wrapping; `renderMediaViewerInner()` renders arrows + video/image; arrow-key navigation; old-record compatibility via regex extension correction (`.png/.bmp/.webp/.tiff` → `.jpg`)
-- [style.css](static/style.css) — Apple-inspired design with CSS custom properties, responsive sidebar, smooth progress bar animation, media viewer nav button styles (`.media-nav-btn`, `.media-prev/.media-next`), batch row hover/selected states
+- [index.html](static/index.html) — SPA shell: navbar (brand icon with custom logo fallback, status badge), sidebar (model info, 5 detection modes, confidence slider only, history list), content area
+- [js/app.js](static/js/app.js) — State management via `state` object, polling-based video/batch progress (300ms interval, ETA display), camera toggle with `toggleCamera()`, file size warning (>10MB), batch mixed file upload (`accept='image/*,video/*'`), async model download polling with `pollDownloadProgress()` (120s timeout, network retry feedback), media viewer with arrow-key navigation for batch results (`showBatchItemPreview()`, `navigateBatchPreview()`), smart sample loading with pre-check (`detectSample()`)
+- [js/common.js](static/js/common.js) — Shared utilities: `escapeHtml()`, `toast()`, `showLoading()`/`showLoadingProgress()`/`updateLoadingProgress()`/`hideLoading()` (unified blur overlay with spinner/progress bar modes)
+- [pages/history.html](static/pages/history.html) — Unified media viewer for history detail: `buildMediaItems()` constructs flat `mediaItems` array from snapshots, batch results, or single result; `selectMediaItem(index)` switches hero view with wrapping; `renderMediaViewerInner()` renders arrows + video/image; arrow-key navigation; old-record compatibility via regex extension correction (`.png/.bmp/.webp/.tiff` → `.jpg`)
+- [css/style.css](static/css/style.css) — Apple-inspired design with CSS custom properties, responsive sidebar, smooth progress bar animation (indeterminate sweep), media viewer nav button styles (`.media-nav-btn`, `.media-prev/.media-next`), batch row hover/selected states, model active indicator (`.model-item.active` with left border accent + `.model-check` blue circle ✓), model delete button (`.model-del-btn` red tint with hover full-red)
+- [img/logo.png](static/img/logo.png) — Custom logo (optional, 32×32). `index.html` loads `<img src="img/logo.png">` with SVG fallback via `onerror`. Place any PNG here to customize the brand icon.
 
 **CLI Tool** ([app/yolo_app.py](app/yolo_app.py)):
 

@@ -330,7 +330,7 @@ def api_set_config():
     data = request.get_json(force=True,silent=True) or {}
     for key in ['confidence','iou_threshold']:
         if key in data: config.set(key,data[key])
-    log.info(f'⚙ 配置更新: conf={config.get("confidence")}, iou={config.get("iou_threshold")}')
+    log.info(f'⚙ 配置更新: conf={config.get("confidence")}')
     return jsonify({'success':True,'message':'配置已更新','data':config.to_dict()})
 
 # ── 图片检测 ─────────────────────────────────────────────────────────────
@@ -1025,14 +1025,16 @@ def api_history():
 
 @app.route('/api/history/check')
 def api_history_check():
-    """轻量检查: 返回最新记录的 ID 和时间戳, 前端对比后决定是否拉取完整列表"""
+    """轻量检查: 返回最新记录的 ID、时间戳和总数, 前端对比后决定是否拉取完整列表"""
     latest = None
+    total = 0
     if RUNS_DIR.exists():
         dirs = sorted([d for d in RUNS_DIR.iterdir() if d.is_dir()], key=lambda x: x.stat().st_mtime, reverse=True)
+        total = len(dirs)
         if dirs:
             d = dirs[0]
             latest = {'id': d.name, 'mtime': d.stat().st_mtime}
-    return jsonify({'success':True,'data':{'latest':latest}})
+    return jsonify({'success':True,'data':{'latest':latest,'total':total}})
 
 @app.route('/api/history/<history_id>')
 def api_history_detail(history_id):
@@ -1054,7 +1056,7 @@ def history_detail_page(history_id):
             data = json.load(f)
     except:
         return '读取失败', 500
-    return send_from_directory(str(BASE_DIR / 'static'), 'history.html')
+    return send_from_directory(str(BASE_DIR / 'static'), 'pages/history.html')
 
 @app.route('/api/history/clear',methods=['POST'])
 def api_clear_history():
@@ -1100,3 +1102,4 @@ def init_app():
 if __name__ == '__main__':
     init_app()
     serve(app, host='0.0.0.0', port=5000)
+    

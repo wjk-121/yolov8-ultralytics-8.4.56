@@ -35,13 +35,20 @@ function toast(type, msg) {
 
 /**
  * 显示模糊遮罩 (spinner 模式)
+ * @param {string} msg - 主提示文字
+ * @param {string} [warning] - 可选的警告提示 (如大文件提醒), 显示在遮罩内部
  */
-function showLoading(msg) {
+function showLoading(msg, warning) {
     var spinner = document.getElementById('loadingSpinner');
     var progress = document.getElementById('loadingProgressWrap');
+    var warnEl = document.getElementById('loadingWarning');
     if (spinner) spinner.style.display = '';
     if (progress) progress.style.display = 'none';
     document.getElementById('loadingText').textContent = msg || '处理中...';
+    if (warnEl) {
+        if (warning) { warnEl.textContent = '⚠ ' + warning; warnEl.style.display = ''; }
+        else { warnEl.textContent = ''; warnEl.style.display = 'none'; }
+    }
     document.getElementById('loading').classList.add('active');
 }
 
@@ -49,11 +56,13 @@ function showLoading(msg) {
  * 显示模糊遮罩 (进度条模式)
  * @param {string} msg - 主提示文字
  * @param {boolean} [indeterminate] - true=不确定进度(扫动动画), false/省略=确定进度(0%起)
+ * @param {string} [warning] - 可选的警告提示, 显示在遮罩内部
  */
-function showLoadingProgress(msg, indeterminate) {
+function showLoadingProgress(msg, indeterminate, warning) {
     var spinner = document.getElementById('loadingSpinner');
     var progress = document.getElementById('loadingProgressWrap');
     var bar = document.getElementById('loadingProgressBar');
+    var warnEl = document.getElementById('loadingWarning');
     if (spinner) spinner.style.display = 'none';
     if (progress) {
         progress.style.display = '';
@@ -69,6 +78,10 @@ function showLoadingProgress(msg, indeterminate) {
         document.getElementById('loadingProgressLive').innerHTML = '';
     }
     document.getElementById('loadingText').textContent = msg || '处理中...';
+    if (warnEl) {
+        if (warning) { warnEl.textContent = '⚠ ' + warning; warnEl.style.display = ''; }
+        else { warnEl.textContent = ''; warnEl.style.display = 'none'; }
+    }
     document.getElementById('loading').classList.add('active');
 }
 
@@ -92,4 +105,6 @@ function updateLoadingProgress(pct, status, live) {
  */
 function hideLoading() {
     document.getElementById('loading').classList.remove('active');
+    var warnEl = document.getElementById('loadingWarning');
+    if (warnEl) { warnEl.textContent = ''; warnEl.style.display = 'none'; }
 }

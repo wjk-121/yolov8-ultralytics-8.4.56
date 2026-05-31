@@ -1,5 +1,73 @@
 /** YOLOv8 Web App v5 — 优化进度条/历史刷新/批量混搭 */
 const state={mode:'image',config:null,model:null,history:[],_latestMtime:null,_latestCount:0,detecting:false,cameraStream:null,cameraActive:false,cameraTimer:null,cameraFpsTimer:null,cameraFrameCount:0,_lastCameraDets:[],_lastCameraB64:'',cameraSessionId:null,cameraSnapshotCount:0,_batchMediaItems:[],_batchMediaIndex:0,_previewMode:false};
+
+// ── 文件类型验证配置 ─────────────────────────────────────────────────────
+const FILE_VALIDATION={
+    image:{exts:['.jpg','.jpeg','.png','.bmp','.webp','.tiff','.tif'],label:'图片',warnMB:20},
+    video:{exts:['.mp4','.avi','.mov','.mkv','.webm','.wmv','.flv'],label:'视频',warnMB:100},
+    batch:{exts:['.jpg','.jpeg','.png','.bmp','.webp','.tiff','.tif','.mp4','.avi','.mov','.mkv','.webm','.wmv','.flv'],label:'图片/视频',warnMB:100}
+};
+function getFileValidation(mode){
+    if(mode==='image')return FILE_VALIDATION.image;
+    if(mode==='video')return FILE_VALIDATION.video;
+    if(mode==='batch')return FILE_VALIDATION.batch;
+    return null;
+}
+function validateFileClient(file,mode){
+    /** 客户端文件验证, 返回 {valid:bool, error:string|null, warn:string|null} */
+    var v=getFileValidation(mode);
+    if(!v)return {valid:true,error:null,warn:null};
+    if(!file||!file.name)return {valid:false,error:'文件名为空',warn:null};
+    var dot=file.name.lastIndexOf('.'),ext=(dot>=0?file.name.substring(dot):'').toLowerCase();
+    if(!ext)return {valid:false,error:'"'+file.name+'" 没有扩展名, 无法识别文件类型',warn:null};
+    if(v.exts.indexOf(ext)===-1)return {valid:false,error:'"'+file.name+'" 类型不支持 ('+ext+'), 请上传 '+v.label+' 文件',warn:null};
+    if(file.size===0)return {valid:false,error:'"'+file.name+'" 是空文件',warn:null};
+    // 大文件提示 (不拒绝, 仅警告 — 具体耗时会由遮罩内 updateSizeWarning 实时展示)
+    var sizeMB=file.size/(1024*1024),warn=null;
+    if(sizeMB>v.warnMB){
+        warn='"'+file.name+'" 文件较大 ('+sizeMB.toFixed(1)+'MB), 检测可能需要较长时间, 请耐心等候';
+    }
+    // 双扩展名安全检测
+    var parts=file.name.split('.'),danger=['exe','dll','bat','cmd','ps1','sh','vbs','js','py','php','com','msi','scr'];
+    if(parts.length>=3){var snd=parts[parts.length-2].toLowerCase();if(danger.indexOf(snd)!==-1)return {valid:false,error:'"'+file.name+'" 包含可疑的双扩展名, 已被拒绝',warn:null}}
+    return {valid:true,error:null,warn:warn};
+}
+
+/**
+ * 根据文件大小生成大文件基础信息 (用于实时动态更新遮罩警告)
+ * @param {File|File[]} files - 单个文件或文件数组
+ * @param {string} mode - 检测模式
+ * @returns {{fileName:string, sizeMB:number, label:string}|null} 基础信息, 无需提示时返回 null
+ */
+function getSizeWarningForLoading(files,mode){
+    var arr=Array.isArray(files)?files:[files];
+    if(!arr.length)return null;
+    var largest=arr[0];
+    for(var i=1;i<arr.length;i++){if(arr[i].size>largest.size)largest=arr[i]}
+    var mb=largest.size/(1024*1024);
+    var v=getFileValidation(mode);
+    if(!v||mb<=v.warnMB)return null;
+    var label=arr.length>1?'最大文件: ':'';
+    return {fileName:largest.name, sizeMB:mb, label:label};
+}
+
+/**
+ * 根据实时进度更新遮罩内的大文件警告文案
+ * @param {{fileName:string, sizeMB:number, label:string}} base - getSizeWarningForLoading 的返回值
+ * @param {number} elapsed - 已耗时 (秒)
+ * @param {number|null} eta - 预计剩余 (秒), null 表示暂无估算
+ */
+function updateSizeWarning(base, elapsed, eta){
+    var warnEl=document.getElementById('loadingWarning');
+    if(!warnEl||!base)return;
+    var msg=base.label+'"'+base.fileName+'" 文件较大 ('+base.sizeMB.toFixed(1)+'MB)';
+    msg+=' | 已耗时 '+formatETA(elapsed);
+    if(eta!==null&&eta>0)msg+=' | 预计剩余 '+formatETA(eta);
+    else msg+=' | 正在处理中...';
+    warnEl.textContent='⚠ '+msg;
+    warnEl.style.display='';
+}
+
 document.addEventListener('DOMContentLoaded',()=>{init();setupUpload();setupKeyboard()});
 
 async function init(){
@@ -23,8 +91,29 @@ function setupUpload(){
     i.addEventListener('change',e=>{
         const files=e.target.files;
         if(!files||!files.length)return;
-        if(state.mode==='batch'){checkFileSize(files[0]);detectBatch(Array.from(files))}
-        else{checkFileSize(files[0]);handleFile(files[0])}
+        // 客户端文件类型预检
+        var valid=[],rejected=[],warnings=[];
+        for(var j=0;j<files.length;j++){
+            var vc=validateFileClient(files[j],state.mode);
+            if(vc.valid){valid.push(files[j]);if(vc.warn)warnings.push(vc.warn)}
+            else rejected.push({name:files[j].name,error:vc.error});
+        }
+        // 大文件提示 (不拒绝, 仅 toast)
+        warnings.forEach(function(w){toast('warning','⚠ '+w)});
+        if(rejected.length>0){
+            rejected.forEach(function(r){toast('error','✗ '+r.error)});
+            var warnMsg=rejected.length+' 个文件不符合要求: '+rejected.map(function(r){return r.name}).join(', ');
+            if(warnMsg.length>120)warnMsg=warnMsg.substring(0,117)+'...';
+            if(rejected.length===1)warnMsg=rejected[0].error;
+            var warnEl=document.getElementById('fileSizeWarning'),warnTxt=document.getElementById('fileSizeWarningText');
+            warnTxt.textContent=warnMsg;warnEl.style.display='flex';
+        }
+        if(!valid.length){i.value='';return}
+        if(state.mode==='batch'){
+            detectBatch(valid);
+        }else{
+            checkFileSize(valid[0]);handleFile(valid[0]);
+        }
     });
     b.addEventListener('dragover',e=>{e.preventDefault();b.classList.add('dragover')});
     b.addEventListener('dragleave',()=>{b.classList.remove('dragover')});
@@ -32,8 +121,24 @@ function setupUpload(){
         e.preventDefault();b.classList.remove('dragover');
         const files=e.dataTransfer.files;
         if(!files||!files.length)return;
-        if(state.mode==='batch'){checkFileSize(files[0]);detectBatch(Array.from(files))}
-        else{checkFileSize(files[0]);handleFile(files[0])}
+        // 客户端文件类型预检
+        var valid=[],rejected=[],warnings=[];
+        for(var j=0;j<files.length;j++){
+            var vc=validateFileClient(files[j],state.mode);
+            if(vc.valid){valid.push(files[j]);if(vc.warn)warnings.push(vc.warn)}
+            else rejected.push({name:files[j].name,error:vc.error});
+        }
+        // 大文件提示 (不拒绝, 仅 toast)
+        warnings.forEach(function(w){toast('warning','⚠ '+w)});
+        if(rejected.length>0){
+            rejected.forEach(function(r){toast('error','✗ '+r.error)});
+            var warnMsg=rejected.length+' 个文件不符合要求';
+            var warnEl=document.getElementById('fileSizeWarning'),warnTxt=document.getElementById('fileSizeWarningText');
+            warnTxt.textContent=warnMsg;warnEl.style.display='flex';
+        }
+        if(!valid.length)return;
+        if(state.mode==='batch'){detectBatch(valid)}
+        else{checkFileSize(valid[0]);handleFile(valid[0])}
     });
     document.getElementById('urlInput').addEventListener('keypress',e=>{if(e.key==='Enter')detectUrl()})
 }
@@ -69,9 +174,11 @@ async function checkFileSize(f){
 }
 
 // ── 图片检测 ──────────────────────────────────────────────────────────
-async function detectImage(f){if(state.detecting)return;if(!state.config){toast('warning','正在初始化，请稍后再试');return}state.detecting=true;showLoadingProgress('正在检测图片...', true);try{const fd=new FormData();fd.append('file',f);fd.append('confidence',state.config.confidence);const r=await fetch('/api/detect/image',{method:'POST',body:fd});const d=await r.json();if(d.success){showImageResult(d.data);toast('success',d.message);loadHistory()}else toast('error',d.error)}catch(e){toast('error','检测失败: '+e.message)}finally{hideLoading();state.detecting=false}}
+async function detectImage(f){if(state.detecting)return;if(!state.config){toast('warning','正在初始化，请稍后再试');return}state.detecting=true;var szImg=getSizeWarningForLoading(f,'image');showLoadingProgress('正在检测图片...', true, szImg?szImg.label+'"'+szImg.fileName+'" 文件较大 ('+szImg.sizeMB.toFixed(1)+'MB), 请耐心等候...':null);try{const fd=new FormData();fd.append('file',f);fd.append('confidence',state.config.confidence);const r=await fetch('/api/detect/image',{method:'POST',body:fd});const d=await r.json();if(d.success){showImageResult(d.data);toast('success',d.message);loadHistory()}else toast('error',d.error)}catch(e){toast('error','检测失败: '+e.message)}finally{hideLoading();state.detecting=false}}
 
-function detectBatch(fs){if(state.detecting)return;if(!state.config){toast('warning','正在初始化，请稍后再试');return}state.detecting=true;let pollInterval=null;var bar=document.getElementById('loadingProgressBar');var pctEl=document.getElementById('loadingProgressPct');var statusEl=document.getElementById('loadingProgressStatus');var liveEl=document.getElementById('loadingProgressLive');var hasVideos=fs.some(function(f){var n=f.name||'';return /\.(mp4|avi|mov|mkv|webm|wmv|flv)$/i.test(n)});showLoadingProgress('正在批量检测 '+fs.length+' 个文件...', !hasVideos);try{var fd=new FormData();fs.forEach(function(f){fd.append('files',f)});fd.append('confidence',state.config.confidence);fetch('/api/detect/batch',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){if(!d.success){toast('error',d.error);hideLoading();state.detecting=false;return}var jobId=d.data.job_id;hideAllInputs();document.getElementById('statsRow').style.display='none';document.getElementById('detailTable').style.display='none';document.getElementById('resultArea').style.display='none';pollInterval=setInterval(function(){fetch('/api/detect/batch/status/'+jobId).then(function(r){return r.json()}).then(function(pd){if(!pd.success)return;var j=pd.data;if(j.status==='processing'){var fileLabel='第 '+(j.current_file_index+1)+'/'+j.total_files+' 个文件';var status=fileLabel+': '+j.current_file_name;if(j.current_file_type==='image'){bar.classList.add('indeterminate');bar.style.width='';pctEl.textContent='';statusEl.textContent=status;liveEl.innerHTML='目标累计: <b>'+j.total_detections+'</b> | 耗时: '+j.elapsed+'s'}else{bar.classList.remove('indeterminate');var fps=j.current_file_frame/Math.max(j.elapsed||0.001,0.001);var live='目标累计: <b>'+j.total_detections+'</b> | 帧: '+j.current_file_frame+'/'+j.current_file_total_frames+' | FPS: '+Math.round(fps)+' | 耗时: '+j.elapsed+'s';if(j.eta)status+=' | 预计剩余 '+formatETA(j.eta);updateLoadingProgress(j.progress,status,live)}}else if(j.status==='complete'){clearInterval(pollInterval);pollInterval=null;updateLoadingProgress(100,'✓ 批量检测完成 — '+j.total_files+' 个文件, '+j.total_detections+' 目标, '+j.elapsed+'s','');hideLoading();toast('success','批量检测完成: '+j.total_detections+' 个目标');showBatchResult({total_images:j.total_images,total_videos:j.total_videos,total_detections:j.total_detections,elapsed_time:j.elapsed,results:j.results,run_name:j.run_name});state.detecting=false;loadHistory()}else if(j.status==='error'){clearInterval(pollInterval);pollInterval=null;hideLoading();toast('error','批量检测失败: '+(j.error||'未知错误'));state.detecting=false}}).catch(function(){/* 轮询网络错误-继续 */})},300)}).catch(function(e){toast('error','批量检测失败: '+e.message);hideLoading();state.detecting=false})}catch(e){toast('error','批量检测失败: '+e.message);hideLoading();if(pollInterval)clearInterval(pollInterval);state.detecting=false}}
+function detectBatch(fs){if(state.detecting)return;if(!state.config){toast('warning','正在初始化，请稍后再试');return}state.detecting=true;let pollInterval=null;var bar=document.getElementById('loadingProgressBar');var pctEl=document.getElementById('loadingProgressPct');var statusEl=document.getElementById('loadingProgressStatus');var liveEl=document.getElementById('loadingProgressLive');var szBatch=getSizeWarningForLoading(fs,'batch');var hasVideos=fs.some(function(f){var n=f.name||'';return /\.(mp4|avi|mov|mkv|webm|wmv|flv)$/i.test(n)});showLoadingProgress('正在批量检测 '+fs.length+' 个文件...', !hasVideos, szBatch?szBatch.label+'"'+szBatch.fileName+'" 文件较大 ('+szBatch.sizeMB.toFixed(1)+'MB), 请耐心等候...':null);try{var fd=new FormData();fs.forEach(function(f){fd.append('files',f)});fd.append('confidence',state.config.confidence);fetch('/api/detect/batch',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){if(!d.success){var errDetail=d.error||'未知错误';if(d.data&&d.data.rejected&&d.data.rejected.length>0){errDetail+='\n被拒绝: '+d.data.rejected.map(function(rr){return rr.filename}).join(', ')}toast('error',errDetail);hideLoading();state.detecting=false;return}var jobId=d.data.job_id;// 有文件被后端拒绝时给出提醒
+if(d.data.total_rejected>0){var rjNames=d.data.rejected.map(function(rr){return rr.filename}).join(', ');setTimeout(function(){toast('warning','⚠ '+d.data.total_rejected+' 个文件被拒绝: '+rjNames)},500)}
+hideAllInputs();document.getElementById('statsRow').style.display='none';document.getElementById('detailTable').style.display='none';document.getElementById('resultArea').style.display='none';pollInterval=setInterval(function(){fetch('/api/detect/batch/status/'+jobId).then(function(r){return r.json()}).then(function(pd){if(!pd.success)return;var j=pd.data;if(j.status==='processing'){var fileLabel='第 '+(j.current_file_index+1)+'/'+j.total_files+' 个文件';var status=fileLabel+': '+j.current_file_name;if(j.current_file_type==='image'){bar.classList.add('indeterminate');bar.style.width='';pctEl.textContent='';statusEl.textContent=status;liveEl.innerHTML='目标累计: <b>'+j.total_detections+'</b> | 耗时: '+j.elapsed+'s';updateSizeWarning(szBatch,j.elapsed,j.eta)}else{bar.classList.remove('indeterminate');var fps=j.current_file_frame/Math.max(j.elapsed||0.001,0.001);var live='目标累计: <b>'+j.total_detections+'</b> | 帧: '+j.current_file_frame+'/'+j.current_file_total_frames+' | FPS: '+Math.round(fps)+' | 耗时: '+j.elapsed+'s';if(j.eta)status+=' | 预计剩余 '+formatETA(j.eta);updateLoadingProgress(j.progress,status,live);updateSizeWarning(szBatch,j.elapsed,j.eta)}}else if(j.status==='complete'){clearInterval(pollInterval);pollInterval=null;updateLoadingProgress(100,'✓ 批量检测完成 — '+j.total_files+' 个文件, '+j.total_detections+' 目标, '+j.elapsed+'s','');hideLoading();toast('success','批量检测完成: '+j.total_detections+' 个目标');showBatchResult({total_images:j.total_images,total_videos:j.total_videos,total_detections:j.total_detections,elapsed_time:j.elapsed,results:j.results,run_name:j.run_name});state.detecting=false;loadHistory()}else if(j.status==='error'){clearInterval(pollInterval);pollInterval=null;hideLoading();toast('error','批量检测失败: '+(j.error||'未知错误'));state.detecting=false}}).catch(function(){/* 轮询网络错误-继续 */})},300)}).catch(function(e){toast('error','批量检测失败: '+e.message);hideLoading();state.detecting=false})}catch(e){toast('error','批量检测失败: '+e.message);hideLoading();if(pollInterval)clearInterval(pollInterval);state.detecting=false}}
 
 async function detectUrl(u){if(state.detecting)return;if(!state.config){toast('warning','正在初始化，请稍后再试');return}u=u||document.getElementById('urlInput').value.trim();if(!u){toast('warning','请输入URL');return}state.detecting=true;showLoadingProgress('正在下载并检测...', true);try{const r=await fetch('/api/detect/url',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:u,confidence:state.config.confidence})});const d=await r.json();if(d.success){showImageResult(d.data);toast('success',d.message);loadHistory()}else toast('error',d.error)}catch(e){toast('error','URL检测失败: '+e.message)}finally{hideLoading();state.detecting=false}}
 
@@ -87,14 +194,16 @@ async function detectVideo(f){
     state.detecting=true;
     let pollInterval=null;
     try{
-        showLoading('正在上传视频...');
+        var szVid=getSizeWarningForLoading(f,'video');
+        var sizeWarnV=szVid?szVid.label+'"'+szVid.fileName+'" 文件较大 ('+szVid.sizeMB.toFixed(1)+'MB), 请耐心等候...':null;
+        showLoading('正在上传视频...', sizeWarnV);
         const fd=new FormData();fd.append('file',f);fd.append('confidence',state.config.confidence);
         const uR=await fetch('/api/detect/video',{method:'POST',body:fd});
         const uD=await uR.json();
         if(!uD.success){toast('error',uD.error);hideLoading();state.detecting=false;return}
 
         // 切换到模糊遮罩进度条模式
-        showLoadingProgress('正在分析视频...');
+        showLoadingProgress('正在分析视频...', false, sizeWarnV);
         hideAllInputs();
         document.getElementById('statsRow').style.display='none';
         document.getElementById('detailTable').style.display='none';
@@ -115,6 +224,7 @@ async function detectVideo(f){
                 let live='目标累计: <b>'+j.total_detections+'</b> | FPS: '+fps+' | 耗时: '+j.elapsed+'s';
 
                 updateLoadingProgress(j.progress, status, live);
+                updateSizeWarning(szVid, j.elapsed, j.eta);
 
                 if(j.status==='complete'){
                     clearInterval(pollInterval);pollInterval=null;

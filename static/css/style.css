@@ -903,6 +903,20 @@ body {
 
 .loading p { font-size: 14px; color: var(--text2); }
 
+.loading-warning {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: #FF9500;
+    background: rgba(255, 149, 0, 0.08);
+    border: 1px solid rgba(255, 149, 0, 0.2);
+    border-radius: 8px;
+    padding: 8px 14px;
+    max-width: 480px;
+    margin-top: 2px;
+}
+
 /* Loading 内嵌进度条 (视频检测 / 模型下载) */
 .loading-progress-wrap {
     width: 90%;

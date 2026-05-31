@@ -342,6 +342,12 @@ def api_detect_image():
         file = request.files.get('file')
         conf_val = request.form.get('confidence', config.get('confidence'))
         if not file or not file.filename: return jsonify({'success':False,'error':'请上传图片'}),400
+
+        # ── 文件类型验证 ──
+        ok, err = _validate_file(file, _IMG_EXTS, _IMG_MIMES)
+        if not ok:
+            log.warning(f'✗ 图片上传被拒绝 | {file.filename} → {err}')
+            return jsonify({'success': False, 'error': err}), 400
         log.info(f'→ 图片检测 | {file.filename} | conf={conf_val}')
         tmp_path = TMP_DIR / f'img_{uuid.uuid4().hex}{Path(file.filename).suffix}'
         file.save(str(tmp_path))
@@ -390,6 +396,78 @@ def api_detect_image():
 # ── 批量检测 (异步轮询, 支持图片+视频混搭, 实时进度) ──────────────────
 _IMG_EXTS = {'.jpg','.jpeg','.png','.bmp','.webp','.tiff','.tif'}
 _VID_EXTS = {'.mp4','.avi','.mov','.mkv','.webm','.wmv','.flv'}
+
+# MIME 类型映射 (二次校验, 浏览器可能发送不准确的 Content-Type, 仅作辅助)
+_IMG_MIMES = {'image/jpeg','image/png','image/bmp','image/webp','image/tiff'}
+_VID_MIMES = {'video/mp4','video/x-msvideo','video/quicktime','video/x-matroska','video/webm','video/x-ms-wmv','video/x-flv'}
+
+# 大文件参考阈值 (不拒绝上传, 仅用于前端/日志提示)
+LARGE_IMAGE_MB = 20   # 图片超过此值给出提示
+LARGE_VIDEO_MB = 100  # 视频超过此值给出提示
+
+def _validate_file(file, allowed_exts, allowed_mimes):
+    """验证上传文件: 扩展名 + MIME + 空文件检测 + 双扩展名防护
+    注意: 不限制文件大小 — 超大文件仅记录日志, 不拒绝上传
+    Returns: (is_valid, error_message)
+    """
+    # 1. 检查文件名
+    if not file or not file.filename:
+        return False, '未选择文件'
+
+    fname = file.filename
+
+    # 2. 检查文件是否为空
+    try:
+        file.seek(0, 2)
+        fsize = file.tell()
+        file.seek(0)
+        if fsize == 0:
+            return False, f'文件 "{fname}" 为空, 请重新选择'
+    except Exception:
+        fsize = None  # 流式上传无法检测大小
+        pass
+
+    # 3. 扩展名校验
+    ext = Path(fname).suffix.lower()
+    if not ext:
+        return False, f'文件 "{fname}" 没有扩展名, 无法识别文件类型'
+    if ext not in allowed_exts:
+        allowed_str = ', '.join(sorted(allowed_exts))
+        return False, f'不支持的文件类型 "{ext}" (允许: {allowed_str})'
+
+    # 4. 大文件提示 (不拒绝, 仅记录日志)
+    if fsize:
+        size_mb = fsize / (1024 * 1024)
+        is_img = ext in _IMG_EXTS
+        threshold = LARGE_IMAGE_MB if is_img else LARGE_VIDEO_MB
+        if size_mb > threshold:
+            log.info(f'⚠ 大文件上传: {fname} ({size_mb:.1f}MB), 检测可能需要较长时间')
+
+    # 5. MIME 类型辅助校验 — 仅当浏览器提供了 Content-Type 且明显不匹配时警告
+    if allowed_mimes and file.content_type:
+        ct = file.content_type.split(';')[0].strip().lower()
+        if ct and ct not in allowed_mimes and ct != 'application/octet-stream':
+            # 不直接拒绝 (浏览器 MIME 可能不准), 但可在此记录日志
+            log.warning(f'⚠ MIME 类型可疑: {fname} → {ct} (预期: {", ".join(sorted(allowed_mimes))})')
+
+    # 6. 文件名安全校验 (防止双扩展名伪装攻击)
+    parts = fname.rsplit('.', 2)
+    if len(parts) >= 3:
+        second_ext = '.' + parts[-2].lower()
+        dangerous = {'.exe','.dll','.bat','.cmd','.ps1','.sh','.vbs','.js','.py','.php','.com','.msi','.scr'}
+        if second_ext in dangerous:
+            return False, f'文件名 "{fname}" 包含可疑的双扩展名, 已被拒绝'
+
+    return True, None
+
+# 扩展名友好名称映射
+_EXT_FRIENDLY = {
+    **{ext: '图片' for ext in _IMG_EXTS},
+    **{ext: '视频' for ext in _VID_EXTS},
+}
+for ext in ('.jpg','.jpeg','.png','.bmp'): _EXT_FRIENDLY[ext] = '图片'
+for ext in ('.mp4','.avi','.mov','.mkv'): _EXT_FRIENDLY[ext] = '视频'
+
 _batch_jobs = {}  # job_id -> {status, progress, current_file_index, total_files, ...}
 
 @app.route('/api/detect/batch',methods=['POST'])
@@ -401,21 +479,49 @@ def api_detect_batch():
         if not files: return jsonify({'success':False,'error':'请上传文件'}),400
         conf_val = float(request.form.get('confidence', config.get('confidence')))
 
-        # 分类并保存文件
-        saved = []  # [(temp_path, original_filename, type)]
+        # 分类并验证文件
+        saved = []      # [(temp_path, original_filename, type)]
+        rejected = []   # [{filename, reason}]
         for f in files:
-            if not f.filename: continue
+            if not f.filename:
+                rejected.append({'filename': '(空文件名)', 'reason': '文件名为空'})
+                continue
+
             ext = Path(f.filename).suffix.lower()
             if ext in _IMG_EXTS:
+                ok, err = _validate_file(f, _IMG_EXTS, _IMG_MIMES)
+                if not ok:
+                    rejected.append({'filename': f.filename, 'reason': err})
+                    continue
                 tp = TMP_DIR / f'batchimg_{uuid.uuid4().hex}_{f.filename}'
                 f.save(str(tp))
                 saved.append((tp, f.filename, 'image'))
             elif ext in _VID_EXTS:
+                ok, err = _validate_file(f, _VID_EXTS, _VID_MIMES)
+                if not ok:
+                    rejected.append({'filename': f.filename, 'reason': err})
+                    continue
                 tp = TMP_DIR / f'batchvid_{uuid.uuid4().hex}_{f.filename}'
                 f.save(str(tp))
                 saved.append((tp, f.filename, 'video'))
+            else:
+                # 扩展名不在任何允许列表中
+                rejected.append({
+                    'filename': f.filename,
+                    'reason': f'不支持的文件类型 "{ext}" (允许图片: {", ".join(sorted(_IMG_EXTS))}; 视频: {", ".join(sorted(_VID_EXTS))})'
+                })
 
-        if not saved: return jsonify({'success':False,'error':'没有可处理的文件'}),400
+        if rejected:
+            names = ', '.join(r['filename'] for r in rejected[:5])
+            extra = f' ...等{len(rejected)}个' if len(rejected) > 5 else ''
+            log.warning(f'✗ 批量上传部分被拒绝 | {len(rejected)}/{len(files)} 文件: {names}{extra}')
+
+        if not saved:
+            return jsonify({
+                'success': False,
+                'error': f'所有 {len(rejected)} 个文件均不符合要求',
+                'data': {'rejected': rejected, 'total_rejected': len(rejected)}
+            }), 400
 
         n_imgs = sum(1 for s in saved if s[2] == 'image')
         n_vids = sum(1 for s in saved if s[2] == 'video')
@@ -619,16 +725,20 @@ def api_detect_batch():
                 traceback.print_exc()
 
         threading.Thread(target=process_batch, daemon=True).start()
+        resp_data = {
+            'job_id': job_id,
+            'total_files': len(saved),
+            'total_images': sum(1 for s in saved if s[2] == 'image'),
+            'total_videos': sum(1 for s in saved if s[2] == 'video'),
+            'has_videos': has_videos
+        }
+        if rejected:
+            resp_data['rejected'] = rejected
+            resp_data['total_rejected'] = len(rejected)
         return jsonify({
             'success': True,
-            'message': f'批量检测已启动 ({len(saved)} 个文件)',
-            'data': {
-                'job_id': job_id,
-                'total_files': len(saved),
-                'total_images': sum(1 for s in saved if s[2] == 'image'),
-                'total_videos': sum(1 for s in saved if s[2] == 'video'),
-                'has_videos': has_videos
-            }
+            'message': f'批量检测已启动 ({len(saved)} 个文件)' + (f', {len(rejected)} 个被拒绝' if rejected else ''),
+            'data': resp_data
         })
     except Exception as e:
         traceback.print_exc()
@@ -787,6 +897,12 @@ def api_detect_video():
         if 'file' not in request.files: return jsonify({'success':False,'error':'请上传视频文件'}),400
         file = request.files['file']
         if not file.filename: return jsonify({'success':False,'error':'未选择文件'}),400
+
+        # ── 文件类型验证 ──
+        ok, err = _validate_file(file, _VID_EXTS, _VID_MIMES)
+        if not ok:
+            log.warning(f'✗ 视频上传被拒绝 | {file.filename} → {err}')
+            return jsonify({'success': False, 'error': err}), 400
         conf_val = float(request.form.get('confidence', config.get('confidence')))
         log.info(f'→ 视频检测 | {file.filename} | conf={conf_val}')
         tmp_path = TMP_DIR / f'vid_{uuid.uuid4().hex}{Path(file.filename).suffix}'

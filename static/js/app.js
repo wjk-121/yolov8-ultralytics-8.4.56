@@ -1,5 +1,5 @@
 /** YOLOv8 Web App v5 — 优化进度条/历史刷新/批量混搭 */
-const state={mode:'image',config:null,model:null,history:[],_latestMtime:null,_latestCount:0,detecting:false,cameraStream:null,cameraActive:false,cameraTimer:null,cameraFpsTimer:null,cameraFrameCount:0,_lastCameraDets:[],_lastCameraB64:'',cameraSessionId:null,cameraSnapshotCount:0,_batchMediaItems:[],_batchMediaIndex:0,_previewMode:false};
+const state={mode:'image',config:null,model:null,history:[],_latestMtime:null,_latestCount:0,detecting:false,cameraStream:null,cameraActive:false,cameraTimer:null,cameraFpsTimer:null,cameraFrameCount:0,_lastCameraDets:[],_lastCameraB64:'',cameraSessionId:null,cameraSnapshotCount:0,_batchMediaItems:[],_batchMediaIndex:0,_previewMode:false,_queueDismissed:false,_queueJobId:null,_queueJobType:null,_queueSzWarning:null};
 
 // ── 文件类型验证配置 ─────────────────────────────────────────────────────
 const FILE_VALIDATION={
@@ -68,11 +68,71 @@ function updateSizeWarning(base, elapsed, eta){
     warnEl.style.display='';
 }
 
+// ── 客户端标识 ──────────────────────────────────────────────────────────
+function getClientId(){
+    try{
+        var id=localStorage.getItem('yolo_client_id');
+        if(!id){id='c_'+Math.random().toString(36).substring(2,10);localStorage.setItem('yolo_client_id',id)}
+        return id;
+    }catch(e){return 'c_'+Math.random().toString(36).substring(2,10)}
+}
+
+// ── 活跃任务持久化 ─────────────────────────────────────────────────────
+function saveActiveJob(jobId,type,filename,sizeMB){
+    try{localStorage.setItem('activeJob',JSON.stringify({jobId:jobId,type:type,filename:filename,sizeMB:sizeMB||0,savedAt:Date.now()}))}catch(e){}
+}
+function getActiveJob(){
+    try{var raw=localStorage.getItem('activeJob');if(!raw)return null;var job=JSON.parse(raw);if(Date.now()-job.savedAt>86400000){localStorage.removeItem('activeJob');return null}return job}catch(e){return null}
+}
+function clearActiveJob(){try{localStorage.removeItem('activeJob')}catch(e){}}
+
+// ── 遮罩退出/恢复 (排队 & 处理中都可退出) ──────────────────────────────
+function dismissOverlay(){
+    // 隐藏全屏遮罩，显示底部迷你栏
+    document.getElementById('loading').classList.remove('active');
+    var mini=document.getElementById('queueMini');
+    if(mini)mini.style.display='flex';
+    state._queueDismissed=true;
+}
+
+function restoreOverlay(){
+    // 恢复全屏遮罩
+    var mini=document.getElementById('queueMini');
+    if(mini)mini.style.display='none';
+    document.getElementById('loading').classList.add('active');
+    state._queueDismissed=false;
+}
+
+function updateQueueMini(status,pos,estWait,progress){
+    /** 更新底部迷你栏内容 */
+    var mini=document.getElementById('queueMini'),txt=document.getElementById('queueMiniText');
+    if(!mini||!txt)return;
+    mini.style.display='flex';
+    if(status==='queued'){
+        var posStr=pos?('前方 '+pos):'...';
+        var waitStr=estWait?(' · 预计约 '+formatETA(estWait)):'';
+        txt.innerHTML='<span class="qmini-icon">⏳</span> 排队中 · '+posStr+waitStr;
+        mini.className='queue-mini queue-mini-queued';
+    }else if(status==='processing'){
+        var pctStr=progress!==undefined?(' · '+Math.round(progress)+'%'):'';
+        txt.innerHTML='<span class="qmini-icon">📊</span> 处理中'+pctStr;
+        mini.className='queue-mini queue-mini-processing';
+    }
+    // 点击迷你栏恢复遮罩
+    mini.onclick=function(){restoreOverlay()};
+}
+
+function hideQueueMini(){
+    var mini=document.getElementById('queueMini');
+    if(mini)mini.style.display='none';
+}
+
 document.addEventListener('DOMContentLoaded',()=>{init();setupUpload();setupKeyboard()});
 
 async function init(){
     try{const r=await fetch('/api/status');const d=await r.json();if(d.success){state.model=d.data;state.config=d.data.config;updateModelDisplay();updateStatus();updateSliders()}}catch(e){toast('error','初始化失败: '+e.message)}
     loadHistory();
+    resumeActiveJob();
     // 轻量轮询历史更新 (每10秒检查一次)
     setInterval(checkHistoryUpdate,10000);
 }
@@ -82,6 +142,53 @@ async function checkHistoryUpdate(){
         var count=d.data.total||0;
         if(state._latestCount!==count){await loadHistory()}
     }}catch(e){/* 静默失败 */}
+}
+
+async function resumeActiveJob(){
+    /** 页面加载时自动恢复活跃任务 */
+    // 1. 先尝试 localStorage
+    var saved=getActiveJob();
+    var jobId=null,jobType=null;
+    if(saved){
+        // 验证任务是否还在
+        try{
+            var r=await fetch('/api/detect/'+saved.type+'/status/'+saved.jobId);
+            var d=await r.json();
+            if(d.success&&d.data&&(d.data.status==='queued'||d.data.status==='processing')){
+                jobId=saved.jobId;jobType=saved.type;
+            }else{clearActiveJob()}
+        }catch(e){clearActiveJob()}
+    }
+    // 2. localStorage 无记录时查服务端
+    if(!jobId){
+        try{
+            var r2=await fetch('/api/jobs/active?client_id='+getClientId());
+            var d2=await r2.json();
+            if(d2.success&&d2.data.jobs.length>0){
+                var j=d2.data.jobs[0];  // 取最新
+                jobId=j.job_id;jobType=j.type;
+            }
+        }catch(e){}
+    }
+    if(!jobId)return;
+
+    // 恢复成功 — 显示遮罩并开始轮询
+    state.detecting=true;
+    hideAllInputs();
+    document.getElementById('statsRow').style.display='none';
+    document.getElementById('detailTable').style.display='none';
+    document.getElementById('resultArea').style.display='none';
+    state._queueDismissed=false;
+    state._queueJobId=jobId;
+    state._queueJobType=jobType;
+
+    if(jobType==='video'){
+        showLoadingProgress('正在恢复视频检测...', false);
+        startVideoPolling(jobId,null);
+    }else{
+        showLoadingProgress('正在恢复批量检测...', false);
+        startBatchPolling(jobId,null);
+    }
 }
 
 function setupUpload(){
@@ -163,7 +270,7 @@ function switchMode(m){
 
 function handleFile(f){if(state.mode==='image')detectImage(f);else if(state.mode==='batch'){const i=document.getElementById('fileInput');detectBatch(Array.from(i.files))}else if(state.mode==='video')detectVideo(f)}
 function loadSample(){detectSample('bus')}
-function detectSample(name){if(state.detecting)return;if(!state.config){toast('warning','正在初始化，请稍后再试');return}state.detecting=true;fetch('/api/samples/check/'+name).then(function(r){return r.json()}).then(function(check){if(check.data&&check.data.exists){showLoading('正在检测示例图片...')}else{showLoadingProgress('图片正在下载，请稍后',true)}return fetch('/api/detect/sample',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,confidence:state.config.confidence})})}).then(function(r){return r.json()}).then(function(d){if(d.success){showImageResult(d.data);toast('success',d.message);loadHistory()}else toast('error',d.error)}).catch(function(e){toast('error','示例检测失败: '+e.message)}).finally(function(){hideLoading();state.detecting=false})}
+function detectSample(name){if(state.detecting)return;if(!state.config){toast('warning','正在初始化，请稍后再试');return}state.detecting=true;fetch('/api/samples/check/'+name).then(function(r){return r.json()}).then(function(check){if(check.data&&check.data.exists){showLoading('正在检测示例图片...')}else{showLoadingProgress('图片正在下载，请稍后',true)}return fetch('/api/detect/sample',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,confidence:state.config.confidence,client_id:getClientId()})})}).then(function(r){return r.json()}).then(function(d){if(d.success){showImageResult(d.data);toast('success',d.message);loadHistory()}else toast('error',d.error)}).catch(function(e){toast('error','示例检测失败: '+e.message)}).finally(function(){hideLoading();state.detecting=false})}
 function setUrl(u){document.getElementById('urlInput').value=u}
 
 // ── 文件大小检查 ─────────────────────────────────────────────────────────
@@ -174,13 +281,134 @@ async function checkFileSize(f){
 }
 
 // ── 图片检测 ──────────────────────────────────────────────────────────
-async function detectImage(f){if(state.detecting)return;if(!state.config){toast('warning','正在初始化，请稍后再试');return}state.detecting=true;var szImg=getSizeWarningForLoading(f,'image');showLoadingProgress('正在检测图片...', true, szImg?szImg.label+'"'+szImg.fileName+'" 文件较大 ('+szImg.sizeMB.toFixed(1)+'MB), 请耐心等候...':null);try{const fd=new FormData();fd.append('file',f);fd.append('confidence',state.config.confidence);const r=await fetch('/api/detect/image',{method:'POST',body:fd});const d=await r.json();if(d.success){showImageResult(d.data);toast('success',d.message);loadHistory()}else toast('error',d.error)}catch(e){toast('error','检测失败: '+e.message)}finally{hideLoading();state.detecting=false}}
+async function detectImage(f){if(state.detecting)return;if(!state.config){toast('warning','正在初始化，请稍后再试');return}state.detecting=true;var szImg=getSizeWarningForLoading(f,'image');showLoadingProgress('正在检测图片...', true, szImg?szImg.label+'"'+szImg.fileName+'" 文件较大 ('+szImg.sizeMB.toFixed(1)+'MB), 请耐心等候...':null);try{const fd=new FormData();fd.append('file',f);fd.append('confidence',state.config.confidence);fd.append('client_id',getClientId());const r=await fetch('/api/detect/image',{method:'POST',body:fd});const d=await r.json();if(d.success){showImageResult(d.data);toast('success',d.message);loadHistory()}else toast('error',d.error)}catch(e){toast('error','检测失败: '+e.message)}finally{hideLoading();state.detecting=false}}
 
-function detectBatch(fs){if(state.detecting)return;if(!state.config){toast('warning','正在初始化，请稍后再试');return}state.detecting=true;let pollInterval=null;var bar=document.getElementById('loadingProgressBar');var pctEl=document.getElementById('loadingProgressPct');var statusEl=document.getElementById('loadingProgressStatus');var liveEl=document.getElementById('loadingProgressLive');var szBatch=getSizeWarningForLoading(fs,'batch');var hasVideos=fs.some(function(f){var n=f.name||'';return /\.(mp4|avi|mov|mkv|webm|wmv|flv)$/i.test(n)});showLoadingProgress('正在批量检测 '+fs.length+' 个文件...', !hasVideos, szBatch?szBatch.label+'"'+szBatch.fileName+'" 文件较大 ('+szBatch.sizeMB.toFixed(1)+'MB), 请耐心等候...':null);try{var fd=new FormData();fs.forEach(function(f){fd.append('files',f)});fd.append('confidence',state.config.confidence);fetch('/api/detect/batch',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){if(!d.success){var errDetail=d.error||'未知错误';if(d.data&&d.data.rejected&&d.data.rejected.length>0){errDetail+='\n被拒绝: '+d.data.rejected.map(function(rr){return rr.filename}).join(', ')}toast('error',errDetail);hideLoading();state.detecting=false;return}var jobId=d.data.job_id;// 有文件被后端拒绝时给出提醒
-if(d.data.total_rejected>0){var rjNames=d.data.rejected.map(function(rr){return rr.filename}).join(', ');setTimeout(function(){toast('warning','⚠ '+d.data.total_rejected+' 个文件被拒绝: '+rjNames)},500)}
-hideAllInputs();document.getElementById('statsRow').style.display='none';document.getElementById('detailTable').style.display='none';document.getElementById('resultArea').style.display='none';pollInterval=setInterval(function(){fetch('/api/detect/batch/status/'+jobId).then(function(r){return r.json()}).then(function(pd){if(!pd.success)return;var j=pd.data;if(j.status==='processing'){var fileLabel='第 '+(j.current_file_index+1)+'/'+j.total_files+' 个文件';var status=fileLabel+': '+j.current_file_name;if(j.current_file_type==='image'){bar.classList.add('indeterminate');bar.style.width='';pctEl.textContent='';statusEl.textContent=status;liveEl.innerHTML='目标累计: <b>'+j.total_detections+'</b> | 耗时: '+j.elapsed+'s';updateSizeWarning(szBatch,j.elapsed,j.eta)}else{bar.classList.remove('indeterminate');var fps=j.current_file_frame/Math.max(j.elapsed||0.001,0.001);var live='目标累计: <b>'+j.total_detections+'</b> | 帧: '+j.current_file_frame+'/'+j.current_file_total_frames+' | FPS: '+Math.round(fps)+' | 耗时: '+j.elapsed+'s';if(j.eta)status+=' | 预计剩余 '+formatETA(j.eta);updateLoadingProgress(j.progress,status,live);updateSizeWarning(szBatch,j.elapsed,j.eta)}}else if(j.status==='complete'){clearInterval(pollInterval);pollInterval=null;updateLoadingProgress(100,'✓ 批量检测完成 — '+j.total_files+' 个文件, '+j.total_detections+' 目标, '+j.elapsed+'s','');hideLoading();toast('success','批量检测完成: '+j.total_detections+' 个目标');showBatchResult({total_images:j.total_images,total_videos:j.total_videos,total_detections:j.total_detections,elapsed_time:j.elapsed,results:j.results,run_name:j.run_name});state.detecting=false;loadHistory()}else if(j.status==='error'){clearInterval(pollInterval);pollInterval=null;hideLoading();toast('error','批量检测失败: '+(j.error||'未知错误'));state.detecting=false}}).catch(function(){/* 轮询网络错误-继续 */})},300)}).catch(function(e){toast('error','批量检测失败: '+e.message);hideLoading();state.detecting=false})}catch(e){toast('error','批量检测失败: '+e.message);hideLoading();if(pollInterval)clearInterval(pollInterval);state.detecting=false}}
+// ── 批量轮询 (提取为独立函数, 供初始检测 + 恢复共用) ──────────────
+function startBatchPolling(jobId, szBatch){
+    var bar=document.getElementById('loadingProgressBar'),pctEl=document.getElementById('loadingProgressPct'),statusEl=document.getElementById('loadingProgressStatus'),liveEl=document.getElementById('loadingProgressLive');
+    var pollInterval=setInterval(function(){
+        fetch('/api/detect/batch/status/'+jobId).then(function(r){return r.json()}).then(function(pd){
+            if(!pd.success)return;
+            var j=pd.data;
 
-async function detectUrl(u){if(state.detecting)return;if(!state.config){toast('warning','正在初始化，请稍后再试');return}u=u||document.getElementById('urlInput').value.trim();if(!u){toast('warning','请输入URL');return}state.detecting=true;showLoadingProgress('正在下载并检测...', true);try{const r=await fetch('/api/detect/url',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:u,confidence:state.config.confidence})});const d=await r.json();if(d.success){showImageResult(d.data);toast('success',d.message);loadHistory()}else toast('error',d.error)}catch(e){toast('error','URL检测失败: '+e.message)}finally{hideLoading();state.detecting=false}}
+            // 排队状态
+            if(j.status==='queued'){
+                if(!state._queueDismissed){
+                    var qPos=j.queue_position||0;
+                    var estWait=j.estimated_wait||0;
+                    document.getElementById('loadingSpinner').style.display='';
+                    document.getElementById('loadingProgressWrap').style.display='none';
+                    document.getElementById('loadingText').textContent='排队中 · 前方 '+qPos+' 个任务';
+                    var wEl2=document.getElementById('loadingWarning');
+                    if(wEl2&&estWait>0){wEl2.textContent='⚠ 预计等待约 '+formatETA(estWait);wEl2.style.display=''}
+                    document.getElementById('loadingDismissBtn').style.display='';
+                }
+                updateQueueMini('queued', j.queue_position, j.estimated_wait, null);
+                return;
+            }
+
+            // 处理中 — 遮罩未收起
+            if(j.status==='processing'&&!state._queueDismissed){
+                document.getElementById('loadingSpinner').style.display='none';
+                document.getElementById('loadingProgressWrap').style.display='';
+                document.getElementById('loadingDismissBtn').style.display='';
+                var fileLabel='第 '+(j.current_file_index+1)+'/'+j.total_files+' 个文件';
+                var status=fileLabel+': '+j.current_file_name;
+                if(j.current_file_type==='image'){
+                    bar.classList.add('indeterminate');bar.style.width='';pctEl.textContent='';
+                    statusEl.textContent=status;
+                    liveEl.innerHTML='目标累计: <b>'+j.total_detections+'</b> | 耗时: '+j.elapsed+'s';
+                    updateSizeWarning(szBatch,j.elapsed,j.eta);
+                }else{
+                    bar.classList.remove('indeterminate');
+                    var fps=j.current_file_frame/Math.max(j.elapsed||0.001,0.001);
+                    var live='目标累计: <b>'+j.total_detections+'</b> | 帧: '+j.current_file_frame+'/'+j.current_file_total_frames+' | FPS: '+Math.round(fps)+' | 耗时: '+j.elapsed+'s';
+                    if(j.eta)status+=' | 预计剩余 '+formatETA(j.eta);
+                    updateLoadingProgress(j.progress,status,live);
+                    updateSizeWarning(szBatch,j.elapsed,j.eta);
+                }
+            }
+
+            // 处理中 — 遮罩已收起
+            if(j.status==='processing'&&state._queueDismissed){
+                updateQueueMini('processing', null, null, j.progress);
+            }
+
+            if(j.status==='complete'){
+                clearInterval(pollInterval);pollInterval=null;
+                clearActiveJob();hideQueueMini();
+                if(!state._queueDismissed){
+                    updateLoadingProgress(100,'✓ 批量检测完成 — '+j.total_files+' 个文件, '+j.total_detections+' 目标, '+j.elapsed+'s','');
+                    hideLoading();
+                }else{
+                    hideLoading();document.getElementById('loading').classList.remove('active');
+                }
+                toast('success','批量检测完成: '+j.total_detections+' 个目标');
+                showBatchResult({total_images:j.total_images,total_videos:j.total_videos,total_detections:j.total_detections,elapsed_time:j.elapsed,results:j.results,run_name:j.run_name});
+                state.detecting=false;loadHistory();
+            }else if(j.status==='error'){
+                clearInterval(pollInterval);pollInterval=null;
+                clearActiveJob();hideQueueMini();
+                hideLoading();document.getElementById('loading').classList.remove('active');
+                toast('error','批量检测失败: '+(j.error||'未知错误'));
+                state.detecting=false;
+            }
+        }).catch(function(){/* 轮询网络错误-继续 */})
+    },300);
+    return pollInterval;
+}
+
+function detectBatch(fs){
+    if(state.detecting)return;
+    if(!state.config){toast('warning','正在初始化，请稍后再试');return}
+    state.detecting=true;
+    state._queueDismissed=false;
+    state._queueJobId=null;
+    state._queueJobType='batch';
+    state._queueSzWarning=getSizeWarningForLoading(fs,'batch');
+    var szBatch=state._queueSzWarning;
+    var hasVideos=fs.some(function(f){var n=f.name||'';return /\.(mp4|avi|mov|mkv|webm|wmv|flv)$/i.test(n)});
+    var sizeWarnB=szBatch?szBatch.label+'"'+szBatch.fileName+'" 文件较大 ('+szBatch.sizeMB.toFixed(1)+'MB), 请耐心等候...':null;
+    try{
+        var fd=new FormData();fs.forEach(function(f){fd.append('files',f)});
+        fd.append('confidence',state.config.confidence);fd.append('client_id',getClientId());
+        fetch('/api/detect/batch',{method:'POST',body:fd}).then(function(r){return r.json()}).then(function(d){
+            if(!d.success){
+                var errDetail=d.error||'未知错误';
+                if(d.data&&d.data.rejected&&d.data.rejected.length>0){errDetail+='\n被拒绝: '+d.data.rejected.map(function(rr){return rr.filename}).join(', ')}
+                toast('error',errDetail);hideLoading();state.detecting=false;return;
+            }
+            var jobId=d.data.job_id;
+            state._queueJobId=jobId;
+            saveActiveJob(jobId,'batch',fs.length+' 个文件',szBatch?szBatch.sizeMB:0);
+            if(d.data.total_rejected>0){
+                var rjNames=d.data.rejected.map(function(rr){return rr.filename}).join(', ');
+                setTimeout(function(){toast('warning','⚠ '+d.data.total_rejected+' 个文件被拒绝: '+rjNames)},500);
+            }
+            hideAllInputs();
+            document.getElementById('statsRow').style.display='none';
+            document.getElementById('detailTable').style.display='none';
+            document.getElementById('resultArea').style.display='none';
+
+            var isQueued=d.data.status==='queued';
+            if(isQueued){
+                showLoading('排队中...');
+                var qPos=d.data.queue_position||0;
+                var estWait=d.data.estimated_wait||0;
+                document.getElementById('loadingText').textContent='排队中 · 前方 '+qPos+' 个任务';
+                if(estWait>0){var wEl3=document.getElementById('loadingWarning');if(wEl3){wEl3.textContent='⚠ 预计等待约 '+formatETA(estWait);wEl3.style.display=''}}
+                document.getElementById('loadingSpinner').style.display='';
+                document.getElementById('loadingProgressWrap').style.display='none';
+            }else{
+                showLoadingProgress('正在批量检测 '+fs.length+' 个文件...', !hasVideos, sizeWarnB);
+            }
+            document.getElementById('loadingDismissBtn').style.display='';
+
+            startBatchPolling(jobId, szBatch);
+        }).catch(function(e){toast('error','批量检测失败: '+e.message);hideLoading();state.detecting=false})
+    }catch(e){toast('error','批量检测失败: '+e.message);hideLoading();state.detecting=false}
+
+async function detectUrl(u){if(state.detecting)return;if(!state.config){toast('warning','正在初始化，请稍后再试');return}u=u||document.getElementById('urlInput').value.trim();if(!u){toast('warning','请输入URL');return}state.detecting=true;showLoadingProgress('正在下载并检测...', true);try{const r=await fetch('/api/detect/url',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:u,confidence:state.config.confidence,client_id:getClientId()})});const d=await r.json();if(d.success){showImageResult(d.data);toast('success',d.message);loadHistory()}else toast('error',d.error)}catch(e){toast('error','URL检测失败: '+e.message)}finally{hideLoading();state.detecting=false}}
 
 // ── 显示图片结果 ─────────────────────────────────────────────────────
 function showImageResult(d){hideAllInputs();const ra=document.getElementById('resultArea');ra.style.display='block';document.getElementById('imageBox').innerHTML='<img id="resultImage" src="" alt="">';const img=document.getElementById('resultImage');img.style.display='block';img.classList.add('loading-img');img.src=d.result_image;img.onload=()=>{img.classList.remove('loading-img')};img.onerror=()=>{img.classList.remove('loading-img');toast('error','标注图片加载失败')};showStats(d);if(d.detections&&d.detections.length>0)showDetailTable(d.detections);else{document.getElementById('detailTable').style.display='none'}}
@@ -188,62 +416,121 @@ function showImageResult(d){hideAllInputs();const ra=document.getElementById('re
 // ── 视频检测 (轮询 + 优化进度) ───────────────────────────────────────
 function formatETA(secs){if(!secs||secs<=0)return'计算中...';if(secs<60)return Math.round(secs)+'秒';if(secs<3600)return Math.floor(secs/60)+'分'+Math.round(secs%60)+'秒';return Math.floor(secs/3600)+'时'+Math.floor((secs%3600)/60)+'分'}
 
+// ── 视频轮询 (提取为独立函数, 供初始检测 + 恢复共用) ──────────────
+function startVideoPolling(jobId, szVid){
+    var pollInterval=setInterval(async()=>{
+        try{
+            var r=await fetch('/api/detect/video/status/'+jobId);
+            var d=await r.json();
+            if(!d.success)return;
+            var j=d.data;
+
+            // 排队状态
+            if(j.status==='queued'){
+                if(!state._queueDismissed){
+                    var qPos=j.queue_position||0;
+                    var estWait=j.estimated_wait||0;
+                    document.getElementById('loadingSpinner').style.display='';
+                    document.getElementById('loadingProgressWrap').style.display='none';
+                    document.getElementById('loadingText').textContent='排队中 · 前方 '+qPos+' 个任务';
+                    var warnEl=document.getElementById('loadingWarning');
+                    if(warnEl&&estWait>0){warnEl.textContent='⚠ 预计等待约 '+formatETA(estWait);warnEl.style.display=''}
+                    document.getElementById('loadingDismissBtn').style.display='';
+                }
+                updateQueueMini('queued', j.queue_position, j.estimated_wait, null);
+                return;
+            }
+
+            // 首次从排队切换为处理中
+            if(j.status==='processing'&&state._queueDismissed){
+                updateQueueMini('processing', null, null, j.progress);
+            }
+
+            // 处理中 — 遮罩未收起
+            if(j.status==='processing'&&!state._queueDismissed){
+                document.getElementById('loadingSpinner').style.display='none';
+                document.getElementById('loadingProgressWrap').style.display='';
+                document.getElementById('loadingDismissBtn').style.display='';
+                var fps=Math.round(j.frame/Math.max(j.elapsed,0.001));
+                var status='检测中... '+j.frame+'/'+j.total_frames+' 帧';
+                if(j.eta)status+=' | 预计剩余 '+formatETA(j.eta);
+                var live='目标累计: <b>'+j.total_detections+'</b> | FPS: '+fps+' | 耗时: '+j.elapsed+'s';
+                updateLoadingProgress(j.progress, status, live);
+                updateSizeWarning(szVid, j.elapsed, j.eta);
+            }
+
+            // 处理中 — 遮罩已收起
+            if(j.status==='processing'&&state._queueDismissed){
+                updateQueueMini('processing', null, null, j.progress);
+            }
+
+            if(j.status==='complete'){
+                clearInterval(pollInterval);pollInterval=null;
+                clearActiveJob();hideQueueMini();
+                if(!state._queueDismissed){
+                    updateLoadingProgress(100, '✓ 检测完成 — '+j.total_frames+' 帧, '+j.total_detections+' 目标, '+j.elapsed+'s', '目标累计: <b style="color:var(--success)">'+j.total_detections+'</b> | FPS: '+j.fps+' | 耗时: '+j.elapsed+'s');
+                    hideLoading();
+                }else{
+                    hideLoading();document.getElementById('loading').classList.remove('active');
+                }
+                showStats({total_detections:j.total_detections, elapsed_time:j.elapsed, fps:j.fps});
+                if(j.result_video){showVideoResult(j.result_video,j.playable)}
+                toast('success','视频检测完成');
+                state.detecting=false;loadHistory();
+            }else if(j.status==='error'){
+                clearInterval(pollInterval);pollInterval=null;
+                clearActiveJob();hideQueueMini();
+                hideLoading();document.getElementById('loading').classList.remove('active');
+                toast('error','视频检测失败: '+(j.error||'未知错误'));
+                state.detecting=false;
+            }
+        }catch(e){/* 轮询网络错误-继续 */}
+    },300);
+    return pollInterval;
+}
+
 async function detectVideo(f){
     if(state.detecting)return;
     if(!state.config){toast('warning','正在初始化，请稍后再试');return}
     state.detecting=true;
-    let pollInterval=null;
+    state._queueDismissed=false;
+    state._queueJobId=null;
+    state._queueJobType='video';
+    state._queueSzWarning=getSizeWarningForLoading(f,'video');
     try{
-        var szVid=getSizeWarningForLoading(f,'video');
+        var szVid=state._queueSzWarning;
         var sizeWarnV=szVid?szVid.label+'"'+szVid.fileName+'" 文件较大 ('+szVid.sizeMB.toFixed(1)+'MB), 请耐心等候...':null;
         showLoading('正在上传视频...', sizeWarnV);
-        const fd=new FormData();fd.append('file',f);fd.append('confidence',state.config.confidence);
-        const uR=await fetch('/api/detect/video',{method:'POST',body:fd});
-        const uD=await uR.json();
+        var fd=new FormData();fd.append('file',f);fd.append('confidence',state.config.confidence);fd.append('client_id',getClientId());
+        var uR=await fetch('/api/detect/video',{method:'POST',body:fd});
+        var uD=await uR.json();
         if(!uD.success){toast('error',uD.error);hideLoading();state.detecting=false;return}
 
-        // 切换到模糊遮罩进度条模式
-        showLoadingProgress('正在分析视频...', false, sizeWarnV);
+        var jobId=uD.data.job_id;
+        state._queueJobId=jobId;
+        saveActiveJob(jobId,'video',f.name,szVid?szVid.sizeMB:0);
         hideAllInputs();
         document.getElementById('statsRow').style.display='none';
         document.getElementById('detailTable').style.display='none';
         document.getElementById('resultArea').style.display='none';
 
-        const jobId=uD.data.job_id;
+        // 初始状态: 排队或处理中
+        var isQueued=uD.data.status==='queued';
+        if(isQueued){
+            showLoading('排队中...');
+            var qPos=uD.data.queue_position||0;
+            var estWait=uD.data.estimated_wait||0;
+            document.getElementById('loadingText').textContent='排队中 · 前方 '+qPos+' 个任务';
+            if(estWait>0){var wEl=document.getElementById('loadingWarning');if(wEl){wEl.textContent='⚠ 预计等待约 '+formatETA(estWait);wEl.style.display=''}}
+            document.getElementById('loadingSpinner').style.display='';
+            document.getElementById('loadingProgressWrap').style.display='none';
+        }else{
+            showLoadingProgress('正在分析视频...', false, sizeWarnV);
+        }
+        document.getElementById('loadingDismissBtn').style.display='';
 
-        pollInterval=setInterval(async()=>{
-            try{
-                const r=await fetch('/api/detect/video/status/'+jobId);
-                const d=await r.json();
-                if(!d.success)return;
-                const j=d.data;
-
-                const fps=Math.round(j.frame/Math.max(j.elapsed,0.001));
-                let status='检测中... '+j.frame+'/'+j.total_frames+' 帧';
-                if(j.eta)status+=' | 预计剩余 '+formatETA(j.eta);
-                let live='目标累计: <b>'+j.total_detections+'</b> | FPS: '+fps+' | 耗时: '+j.elapsed+'s';
-
-                updateLoadingProgress(j.progress, status, live);
-                updateSizeWarning(szVid, j.elapsed, j.eta);
-
-                if(j.status==='complete'){
-                    clearInterval(pollInterval);pollInterval=null;
-                    updateLoadingProgress(100, '✓ 检测完成 — '+j.total_frames+' 帧, '+j.total_detections+' 目标, '+j.elapsed+'s', '目标累计: <b style="color:var(--success)">'+j.total_detections+'</b> | FPS: '+j.fps+' | 耗时: '+j.elapsed+'s');
-                    hideLoading();
-                    showStats({total_detections:j.total_detections, elapsed_time:j.elapsed, fps:j.fps});
-                    if(j.result_video){showVideoResult(j.result_video,j.playable)}
-                    toast('success','视频检测完成');
-                    state.detecting=false;loadHistory();
-                }else if(j.status==='error'){
-                    clearInterval(pollInterval);pollInterval=null;
-                    hideLoading();
-                    toast('error','视频检测失败: '+(j.error||'未知错误'));
-                    state.detecting=false;
-                }
-            }catch(e){/* 轮询网络错误-继续 */}
-        },300);
-
-    }catch(e){toast('error','视频检测失败: '+e.message);hideLoading();if(pollInterval)clearInterval(pollInterval);state.detecting=false}
+        startVideoPolling(jobId, szVid);
+    }catch(e){toast('error','视频检测失败: '+e.message);hideLoading();state.detecting=false}
 }
 
 function showVideoResult(videoUrl,playable){
@@ -313,7 +600,7 @@ async function captureAndDetect(){
     if(!state.cameraActive||state.detecting)return;const v=document.getElementById('cameraVideo');if(!v.videoWidth)return;
     const c=document.createElement('canvas');c.width=v.videoWidth;c.height=v.videoHeight;c.getContext('2d').drawImage(v,0,0);
     const b64=c.toDataURL('image/jpeg',0.8);state.detecting=true;state.cameraFrameCount++;
-    try{const r=await fetch('/api/detect/camera',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_base64:b64,confidence:state.config.confidence})});const d=await r.json();if(d.success){drawCameraResult(d.data);const td=d.data.total_detections;document.getElementById('cameraDets').textContent=td+' 目标';document.getElementById('cameraDets').style.color=td>0?'#34C759':'var(--text2)';state._lastCameraDets=d.data.detections;state._lastCameraB64=b64}}catch(e){console.error(e)}finally{state.detecting=false}
+    try{const r=await fetch('/api/detect/camera',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_base64:b64,confidence:state.config.confidence,client_id:getClientId()})});const d=await r.json();if(d.success){drawCameraResult(d.data);const td=d.data.total_detections;document.getElementById('cameraDets').textContent=td+' 目标';document.getElementById('cameraDets').style.color=td>0?'#34C759':'var(--text2)';state._lastCameraDets=d.data.detections;state._lastCameraB64=b64}}catch(e){console.error(e)}finally{state.detecting=false}
 }
 
 function drawCameraResult(d){
@@ -328,7 +615,7 @@ function drawCameraResult(d){
 
 async function snapshotCamera(){
     if(!state.cameraActive)return;if(!state._lastCameraB64){toast('warning','请等待检测完成');return}
-    try{const r=await fetch('/api/camera/snapshot',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_base64:state._lastCameraB64,detections:state._lastCameraDets||[],session_id:state.cameraSessionId})});const d=await r.json();if(d.success){state.cameraSessionId=d.data.session_id;state.cameraSnapshotCount=d.data.total_snapshots;document.getElementById('cameraSnaps').textContent=d.data.total_snapshots+' 抓拍';toast('success',d.message)}else toast('error',d.error)}catch(e){toast('error','抓拍失败')}
+    try{const r=await fetch('/api/camera/snapshot',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image_base64:state._lastCameraB64,detections:state._lastCameraDets||[],session_id:state.cameraSessionId,client_id:getClientId()})});const d=await r.json();if(d.success){state.cameraSessionId=d.data.session_id;state.cameraSnapshotCount=d.data.total_snapshots;document.getElementById('cameraSnaps').textContent=d.data.total_snapshots+' 抓拍';toast('success',d.message)}else toast('error',d.error)}catch(e){toast('error','抓拍失败')}
 }
 
 // ── UI 辅助 ─────────────────────────────────────────────────────────────
@@ -433,7 +720,14 @@ function renderHistory(){
             default:ic='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg>';
         }
         let s=it.source;if(s.length>25)s=s.substring(0,25)+'...';
-        el.innerHTML='<div class="history-icon">'+ic+'</div><div class="history-info"><div class="history-type">'+it.type+'</div><div class="history-src">'+s+'</div></div><div class="history-meta"><div class="history-dets">'+it.detections+'</div><div class="history-time">'+it.elapsed_time+'s</div></div>';
+        // 时间戳格式化: "2025-05-31 14:23:15" → "05-31 14:23"
+        var ts='';if(it.timestamp){var t=it.timestamp;var sp=t.indexOf(' ');ts=sp>0?t.substring(5,sp):t.substring(0,10)}
+        // 设备标签
+        var cid=it.client_id||'';var myCid=getClientId();
+        var devTag='',devCls='';
+        if(cid===myCid){devTag='本设备';devCls=' history-device-own'}
+        else if(cid){devTag='设备 '+cid.substring(2,6);devCls=' history-device-other'}
+        el.innerHTML='<div class="history-icon">'+ic+'</div><div class="history-info"><div class="history-type">'+it.type+'<span class="history-timestamp">'+ts+'</span><span class="history-device-tag'+devCls+'">'+devTag+'</span></div><div class="history-src">'+s+'</div></div><div class="history-meta"><div class="history-dets">'+it.detections+'</div><div class="history-time">'+it.elapsed_time+'s</div></div>';
         el.addEventListener('click',()=>{window.location.href='/history/'+it.id});l.appendChild(el);
     })
 }

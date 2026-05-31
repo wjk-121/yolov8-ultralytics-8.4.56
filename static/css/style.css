@@ -1264,3 +1264,57 @@ body {
     background: rgba(0,122,255,0.08) !important;
     border-left: 3px solid var(--primary);
 }
+
+/* ── 遮罩退出按钮 (后台等待) ─────────────────────────────────────────── */
+.loading-dismiss-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    margin-top: 14px; padding: 6px 16px;
+    font-size: 13px; font-weight: 400; color: var(--text2);
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 20px; cursor: pointer;
+    transition: all 0.2s; font-family: inherit;
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+}
+.loading-dismiss-btn:hover {
+    background: rgba(255,255,255,0.12); color: var(--text);
+    border-color: rgba(255,255,255,0.15);
+}
+
+/* ── 底部迷你排队/处理中栏 ──────────────────────────────────────────── */
+.queue-mini {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 18px; border-radius: 24px;
+    background: rgba(30,30,30,0.92); color: var(--text);
+    border: 1px solid rgba(255,255,255,0.1);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    cursor: pointer; z-index: 1001;
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    font-size: 13px; transition: all 0.2s;
+}
+.queue-mini:hover {
+    background: rgba(40,40,40,0.95); border-color: rgba(255,255,255,0.18);
+    box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+}
+.queue-mini-text { display: flex; align-items: center; gap: 6px; }
+.qmini-icon { font-size: 16px; }
+.queue-mini-expand {
+    font-size: 11px; color: var(--text3); margin-left: 2px;
+}
+
+/* ── 历史记录设备标签 ───────────────────────────────────────────────── */
+.history-device-tag {
+    display: inline-block; font-size: 10px; font-weight: 500;
+    padding: 1px 6px; border-radius: 8px; margin-left: 6px;
+    vertical-align: middle;
+}
+.history-device-own {
+    background: rgba(0,122,255,0.12); color: var(--primary);
+}
+.history-device-other {
+    background: rgba(255,255,255,0.06); color: var(--text3);
+}
+.history-timestamp {
+    font-size: 11px; color: var(--text3); margin-left: 8px;
+    font-weight: 400;
+}

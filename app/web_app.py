@@ -231,6 +231,7 @@ def _finalize_camera_session(session_id):
         'detections': session['total_detections'],
         'elapsed_time': 0,
         'timestamp': session['created'],
+        'client_id': session.get('client_id', ''),
         'result_image': session['snapshots'][-1]['result_image'] if session['snapshots'] else '',
         'result_data': {
             'snapshot_count': len(session['snapshots']),
@@ -341,6 +342,7 @@ def api_detect_image():
         if config.model is None: return jsonify({'success':False,'error':'模型未加载'}),500
         file = request.files.get('file')
         conf_val = request.form.get('confidence', config.get('confidence'))
+        client_id = (request.form.get('client_id') or '').strip()
         if not file or not file.filename: return jsonify({'success':False,'error':'请上传图片'}),400
 
         # ── 文件类型验证 ──
@@ -348,7 +350,7 @@ def api_detect_image():
         if not ok:
             log.warning(f'✗ 图片上传被拒绝 | {file.filename} → {err}')
             return jsonify({'success': False, 'error': err}), 400
-        log.info(f'→ 图片检测 | {file.filename} | conf={conf_val}')
+        log.info(f'→ 图片检测 | {file.filename} | conf={conf_val} | client={client_id[:8] if client_id else "-"}')
         tmp_path = TMP_DIR / f'img_{uuid.uuid4().hex}{Path(file.filename).suffix}'
         file.save(str(tmp_path))
 
@@ -378,6 +380,7 @@ def api_detect_image():
             'id':run_name, 'type':'图片检测', 'source':file.filename,
             'detections':n, 'elapsed_time':round(elapsed,3),
             'timestamp':datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'client_id':client_id,
             'result_image':result_image,
             'result_data':{'detections':dets,'image_size':{'height':r.orig_shape[0],'width':r.orig_shape[1]} if hasattr(r,'orig_shape') else None},
             'files':[rf.name for rf in result_files]
@@ -468,6 +471,66 @@ _EXT_FRIENDLY = {
 for ext in ('.jpg','.jpeg','.png','.bmp'): _EXT_FRIENDLY[ext] = '图片'
 for ext in ('.mp4','.avi','.mov','.mkv'): _EXT_FRIENDLY[ext] = '视频'
 
+# ── 任务队列 (串行处理 + 客户端隔离) ──────────────────────────────────────
+_processing_lock = threading.Lock()
+_job_queue = []  # 有序等待队列: [(job_id, type), ...]
+
+def _update_all_queue_positions():
+    """更新所有排队任务的 queue_position"""
+    for i, (qid, qtype) in enumerate(_job_queue):
+        d = _video_jobs if qtype == 'video' else _batch_jobs
+        if qid in d:
+            d[qid]['queue_position'] = i + 1
+
+def _calculate_eta_for(job_id):
+    """计算排队任务的预计等待时间 (秒)"""
+    total = 0
+    # 当前正在处理的任务剩余时间
+    for jobs in (_video_jobs, _batch_jobs):
+        for jid, job in jobs.items():
+            if job.get('status') == 'processing':
+                eta = job.get('eta', 0)
+                if eta:
+                    total += eta
+                break
+    # 累加队列中前方任务的粗略预估
+    for qid, qtype in _job_queue:
+        if qid == job_id:
+            break
+        if qtype == 'video':
+            total += 120
+        else:
+            j = _batch_jobs.get(qid, {})
+            n_vids = j.get('total_videos', 0)
+            n_imgs = j.get('total_images', 0)
+            total += n_vids * 120 + n_imgs * 5
+    return max(round(total), 1)
+
+def _run_queued_job(job_id, job_type, jobs_dict, process_fn):
+    """任务执行包装器: 获取锁/排队 → 执行 → 释放锁"""
+    got_lock = _processing_lock.acquire(blocking=False)
+    if got_lock:
+        jobs_dict[job_id]['status'] = 'processing'
+        jobs_dict[job_id]['queue_position'] = 0
+    else:
+        jobs_dict[job_id]['status'] = 'queued'
+        _job_queue.append((job_id, job_type))
+        _update_all_queue_positions()
+        _processing_lock.acquire()  # 阻塞等待
+        # 从队列中移除自己
+        for i, (qid, qtype) in enumerate(_job_queue):
+            if qid == job_id:
+                _job_queue.pop(i)
+                break
+        jobs_dict[job_id]['status'] = 'processing'
+        jobs_dict[job_id]['queue_position'] = 0
+        _update_all_queue_positions()
+    try:
+        process_fn()
+    finally:
+        _processing_lock.release()
+
+
 _batch_jobs = {}  # job_id -> {status, progress, current_file_index, total_files, ...}
 
 @app.route('/api/detect/batch',methods=['POST'])
@@ -478,6 +541,7 @@ def api_detect_batch():
         files = request.files.getlist('files')
         if not files: return jsonify({'success':False,'error':'请上传文件'}),400
         conf_val = float(request.form.get('confidence', config.get('confidence')))
+        client_id = (request.form.get('client_id') or '').strip()
 
         # 分类并验证文件
         saved = []      # [(temp_path, original_filename, type)]
@@ -525,7 +589,7 @@ def api_detect_batch():
 
         n_imgs = sum(1 for s in saved if s[2] == 'image')
         n_vids = sum(1 for s in saved if s[2] == 'video')
-        log.info(f'→ 批量检测 | {len(saved)} 文件 ({n_imgs} 图片 + {n_vids} 视频) | conf={conf_val}')
+        log.info(f'→ 批量检测 | {len(saved)} 文件 ({n_imgs} 图片 + {n_vids} 视频) | conf={conf_val} | client={client_id[:8] if client_id else "-"}')
 
         job_id = f'batch_{uuid.uuid4().hex[:8]}'
         has_videos = any(s[2] == 'video' for s in saved)
@@ -549,7 +613,9 @@ def api_detect_batch():
             'run_name': job_id,
             'has_videos': has_videos,
             'error': None,
-            'start_time': now
+            'start_time': now,
+            'client_id': client_id,
+            'queue_position': 0
         }
 
         def process_batch():
@@ -697,6 +763,7 @@ def api_detect_batch():
                     'id': job_id, 'type': '批量检测', 'source': source_desc,
                     'detections': total_dets, 'elapsed_time': round(elapsed, 3),
                     'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'client_id': client_id,
                     'result_image': result_image,
                     'result_data': {
                         'total_images': total_images, 'total_videos': total_videos,
@@ -724,20 +791,25 @@ def api_detect_batch():
                 log.error(f'✗ 批量检测失败: {e}')
                 traceback.print_exc()
 
-        threading.Thread(target=process_batch, daemon=True).start()
+        threading.Thread(target=lambda: _run_queued_job(job_id, 'batch', _batch_jobs, process_batch), daemon=True).start()
+        is_queued = _batch_jobs[job_id].get('status') == 'queued'
         resp_data = {
             'job_id': job_id,
             'total_files': len(saved),
             'total_images': sum(1 for s in saved if s[2] == 'image'),
             'total_videos': sum(1 for s in saved if s[2] == 'video'),
-            'has_videos': has_videos
+            'has_videos': has_videos,
+            'status': _batch_jobs[job_id]['status']
         }
+        if is_queued:
+            resp_data['queue_position'] = _batch_jobs[job_id].get('queue_position', 0)
+            resp_data['estimated_wait'] = _calculate_eta_for(job_id)
         if rejected:
             resp_data['rejected'] = rejected
             resp_data['total_rejected'] = len(rejected)
         return jsonify({
             'success': True,
-            'message': f'批量检测已启动 ({len(saved)} 个文件)' + (f', {len(rejected)} 个被拒绝' if rejected else ''),
+            'message': f'批量检测已启动 ({len(saved)} 个文件)' + (' (排队中)' if is_queued else '') + (f', {len(rejected)} 个被拒绝' if rejected else ''),
             'data': resp_data
         })
     except Exception as e:
@@ -750,7 +822,10 @@ def api_detect_batch_status(job_id):
     job = _batch_jobs.get(job_id)
     if not job:
         return jsonify({'success': False, 'error': '任务不存在'}), 404
-    return jsonify({'success': True, 'data': job})
+    data = dict(job)
+    if data.get('status') == 'queued':
+        data['estimated_wait'] = _calculate_eta_for(job_id)
+    return jsonify({'success': True, 'data': data})
 
 # ── URL 检测 ─────────────────────────────────────────────────────────────
 @app.route('/api/detect/url',methods=['POST'])
@@ -762,6 +837,7 @@ def api_detect_url():
         url = data.get('url')
         if not url: return jsonify({'success':False,'error':'请提供URL'}),400
         conf_val = data.get('confidence', config.get('confidence'))
+        client_id = (data.get('client_id') or '').strip()
         log.info(f'→ URL检测 | {url[:120]} | conf={conf_val}')
 
         run_name = f'url_{uuid.uuid4().hex[:8]}'
@@ -789,6 +865,7 @@ def api_detect_url():
             'id':run_name, 'type':'URL检测', 'source':url[:200],
             'detections':n, 'elapsed_time':round(elapsed,3),
             'timestamp':datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'client_id':client_id,
             'result_image':result_image, 'result_data':{'detections':dets},
             'files':[rf.name for rf in result_files]
         })
@@ -822,6 +899,7 @@ def api_detect_sample():
         if name not in SAMPLES:
             return jsonify({'success': False, 'error': f'未知示例: {name}'}), 400
         conf_val = float(data.get('confidence', config.get('confidence')))
+        client_id = (data.get('client_id') or '').strip()
 
         sample = SAMPLES[name]
         sample_path = SAMPLES_DIR / sample['file']
@@ -866,6 +944,7 @@ def api_detect_sample():
         _save_run_meta(run_dir, {
             'id': run_name, 'type': '示例检测', 'source': f'{name} ({sample["url"]})',
             'detections': n, 'elapsed_time': round(elapsed, 3),
+            'client_id': client_id,
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'result_image': result_image,
             'result_data': {'detections': dets},
@@ -904,7 +983,8 @@ def api_detect_video():
             log.warning(f'✗ 视频上传被拒绝 | {file.filename} → {err}')
             return jsonify({'success': False, 'error': err}), 400
         conf_val = float(request.form.get('confidence', config.get('confidence')))
-        log.info(f'→ 视频检测 | {file.filename} | conf={conf_val}')
+        client_id = (request.form.get('client_id') or '').strip()
+        log.info(f'→ 视频检测 | {file.filename} | conf={conf_val} | client={client_id[:8] if client_id else "-"}')
         tmp_path = TMP_DIR / f'vid_{uuid.uuid4().hex}{Path(file.filename).suffix}'
         file.save(str(tmp_path))
 
@@ -914,7 +994,7 @@ def api_detect_video():
             'status':'processing', 'progress':0, 'frame':0, 'total_frames':0,
             'total_detections':0, 'elapsed':0, 'eta':None, 'error':None,
             'result_video':None, 'run_name':job_id, 'filename':file.filename,
-            'start_time':now
+            'start_time':now, 'client_id':client_id, 'queue_position':0
         }
 
         def process_video():
@@ -965,6 +1045,7 @@ def api_detect_video():
                     'id':job_id, 'type':'视频检测', 'source':file.filename,
                     'detections':total_dets, 'elapsed_time':round(elapsed,3),
                     'timestamp':datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'client_id':client_id,
                     'result_image':f'/api/runs/{job_id}/{out_name}',
                     'result_data':{'total_frames':total_frames,'total_detections':total_dets,'fps':round(total_frames/elapsed,1) if elapsed>0 else 0,'playable':playable},
                     'files':[out_name]
@@ -986,9 +1067,14 @@ def api_detect_video():
                 log.error(f'✗ 视频检测失败: {e}')
                 traceback.print_exc()
 
-        thread = threading.Thread(target=process_video, daemon=True)
+        thread = threading.Thread(target=lambda: _run_queued_job(job_id, 'video', _video_jobs, process_video), daemon=True)
         thread.start()
-        return jsonify({'success':True,'message':'视频检测已启动','data':{'job_id':job_id,'filename':file.filename}})
+        is_queued = _video_jobs[job_id].get('status') == 'queued'
+        resp = {'job_id':job_id, 'filename':file.filename, 'status':_video_jobs[job_id]['status']}
+        if is_queued:
+            resp['queue_position'] = _video_jobs[job_id].get('queue_position', 0)
+            resp['estimated_wait'] = _calculate_eta_for(job_id)
+        return jsonify({'success':True,'message':'视频检测已启动'+(' (排队中)' if is_queued else ''),'data':resp})
     except Exception as e:
         log.error(f'✗ 视频上传失败: {e}')
         traceback.print_exc()
@@ -998,7 +1084,44 @@ def api_detect_video():
 def api_detect_video_status(job_id):
     job = _video_jobs.get(job_id)
     if not job: return jsonify({'success':False,'error':'任务不存在'}),404
-    return jsonify({'success':True,'data':job})
+    data = dict(job)
+    if data.get('status') == 'queued':
+        data['estimated_wait'] = _calculate_eta_for(job_id)
+    return jsonify({'success':True,'data':data})
+
+# ── 活跃任务查询 (前端断连恢复) ────────────────────────────────────────────
+@app.route('/api/jobs/active')
+def api_jobs_active():
+    """返回当前客户端的所有活跃任务 (queued + processing)"""
+    client_id = request.args.get('client_id', '').strip()
+    if not client_id:
+        return jsonify({'success': False, 'error': '缺少 client_id'}), 400
+    jobs = []
+    for jid, job in _video_jobs.items():
+        if job.get('client_id') == client_id and job.get('status') in ('queued', 'processing'):
+            j = {
+                'job_id': jid, 'type': 'video',
+                'status': job.get('status'), 'filename': job.get('filename', ''),
+                'start_time': job.get('start_time', 0), 'progress': job.get('progress', 0),
+                'queue_position': job.get('queue_position', 0)
+            }
+            if job.get('status') == 'queued':
+                j['estimated_wait'] = _calculate_eta_for(jid)
+            jobs.append(j)
+    for jid, job in _batch_jobs.items():
+        if job.get('client_id') == client_id and job.get('status') in ('queued', 'processing'):
+            j = {
+                'job_id': jid, 'type': 'batch',
+                'status': job.get('status'),
+                'filename': f"{job.get('total_files', 0)} 个文件",
+                'start_time': job.get('start_time', 0), 'progress': job.get('progress', 0),
+                'queue_position': job.get('queue_position', 0)
+            }
+            if job.get('status') == 'queued':
+                j['estimated_wait'] = _calculate_eta_for(jid)
+            jobs.append(j)
+    jobs.sort(key=lambda j: j['start_time'], reverse=True)
+    return jsonify({'success': True, 'data': {'jobs': jobs, 'total': len(jobs)}})
 
 # ── 摄像头检测 ───────────────────────────────────────────────────────────
 @app.route('/api/detect/camera',methods=['POST'])
@@ -1037,7 +1160,9 @@ def api_camera_snapshot():
         if ',' in image_b64: image_b64 = image_b64.split(',')[1]
 
         session_id = data.get('session_id')
+        client_id = (data.get('client_id') or '').strip()
         sid, session = _get_or_create_camera_session(session_id)
+        session['client_id'] = client_id
         run_dir = session['run_dir']
         snapshot_idx = len(session['snapshots']) + 1
 

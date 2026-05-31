@@ -340,6 +340,16 @@
             </div>
             <div class="loading-progress-live" id="loadingProgressLive"></div>
         </div>
+        <button id="loadingDismissBtn" class="loading-dismiss-btn" style="display:none" onclick="dismissOverlay()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            后台等待，先去逛逛
+        </button>
+    </div>
+
+    <!-- 底部迷你排队/处理中栏 -->
+    <div class="queue-mini" id="queueMini" style="display:none" onclick="restoreOverlay()">
+        <span class="queue-mini-text" id="queueMiniText">排队中...</span>
+        <span class="queue-mini-expand">展开 ↑</span>
     </div>
 
     <!-- Toast -->
